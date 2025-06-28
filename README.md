@@ -82,7 +82,7 @@ print(best_scales)
 
 If you use this function in your research, please cite the software using the DOI provided by Zenodo. This ensures that the method is transparent and reproducible.
 
-Maher, P (2025). reduceTo: An R function for optimal short-scale derivation (Version v1.0.0) [Computer software]. Zenodo. https://doi.org/[your.zenodo.doi.here]
+Maher, P (2025). reduceTo: An R function for optimal short-scale derivation (Version v1.0.0) [Computer software]. Zenodo. https://doi.org/10.5281/zenodo.15764037
 
 **License**
 This project is licensed under the MIT License. You are free to use, modify, and distribute this software for any purpose, provided the original copyright and permission notice are included.
