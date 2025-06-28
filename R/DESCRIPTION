@@ -1,0 +1,7 @@
+Package: reduceTo
+Title: An R function for optimal short-scale derivation
+Version: 1.0.0
+Author: Paddy Maher
+Description: A function to find the optimal subset of items for a short-form scale by systematically evaluating all combinations against a criterion.
+License: MIT
+Encoding: UTF-8
