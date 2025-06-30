@@ -30,13 +30,24 @@
 #' @author Paddy Maher, Goldsmiths, University of London. Contact: paddycarstenmaher@gmail.com
 #'
 #' @examples
-#' # Create some sample data
-#' set.seed(123)
-#' sample_data <- as.data.frame(matrix(rnorm(200), ncol = 10))
-#' colnames(sample_data) <- paste0("item_", 1:10)
-#'
-#' # Find the top 5 three-item scales
-#' # reduceTo(sample_data, n.items = 3, n.sets = 5, item.names = TRUE)
+#' library(MASS)
+#' set.seed(42) # For reproducibility
+#' # 1. Define your desired factor loadings.
+#' loadings <- c(rnorm(7,0.75,0.08),rnorm(3,-0.75,0.08))
+#' 
+#' # 2. Create the target correlation matrix from the loadings.
+#' target_cor_matrix <- outer(loadings, loadings)
+#' diag(target_cor_matrix) <- 1
+#' 
+#' # 3. Generate data from that correlation structure.
+#' simulated_data <- mvrnorm(n = 200,mu = rep(0, 10),Sigma = target_cor_matrix,empirical = TRUE)
+#' 
+#' # 4. Finalize the data frame and add names.
+#' simulated_data <- as.data.frame(simulated_data)
+#' colnames(simulated_data) <- paste0("item_", 1:10)
+#' 
+#' # 5. Reduce the scale to 3 items
+#' reduceTo(simulated_data,3)
 #'
 #' @export
 
