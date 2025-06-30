@@ -38,6 +38,7 @@
 #' # Find the top 5 three-item scales
 #' # reduceTo(sample_data, n.items = 3, n.sets = 5, item.names = TRUE)
 #'
+#' @export
 
 reduceTo <- function(data, n.items, n.sets = 5, item.names = FALSE, r.sq = FALSE, generate = FALSE, item.set = 1, na.rm = TRUE, targ = NULL) {
   
