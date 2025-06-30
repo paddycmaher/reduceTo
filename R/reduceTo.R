@@ -33,7 +33,7 @@
 #' library(MASS)
 #' set.seed(42) # For reproducibility
 #' # 1. Define your desired factor loadings.
-#' loadings <- c(rnorm(7,0.75,0.08),rnorm(3,-0.75,0.08))
+#' loadings <- c(rnorm(10,0.75,0.08)*sign(rnorm(10)))
 #' 
 #' # 2. Create the target correlation matrix from the loadings.
 #' target_cor_matrix <- outer(loadings, loadings)
