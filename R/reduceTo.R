@@ -46,7 +46,7 @@
 #' simulated_data <- as.data.frame(simulated_data)
 #' colnames(simulated_data) <- paste0("item_", 1:10)
 #' 
-#' # 5. Reduce the scale to 3 items
+#' # 5. Reduce the scale to 3 items.
 #' reduceTo(simulated_data,3)
 #'
 #' @export
