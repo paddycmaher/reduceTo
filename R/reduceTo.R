@@ -27,7 +27,7 @@
 #'   of items and their correlation with the target, or a numeric vector of scores
 #'   generated from the `item.set`.
 #'
-#' @author [Paddy Maher], [Goldsmiths, University of London]. Contact: [paddycarstenmaher@gmail.com]
+#' @author Paddy Maher, Goldsmiths, University of London. Contact: paddycarstenmaher@gmail.com
 #'
 #' @examples
 #' # Create some sample data
@@ -36,7 +36,7 @@
 #' colnames(sample_data) <- paste0("item_", 1:10)
 #'
 #' # Find the top 5 three-item scales
-#' # reduce.to(sample_data, n.items = 3, n.sets = 5, item.names = TRUE)
+#' # reduceTo(sample_data, n.items = 3, n.sets = 5, item.names = TRUE)
 #'
 
 reduceTo <- function(data, n.items, n.sets = 5, item.names = FALSE, r.sq = FALSE, generate = FALSE, item.set = 1, na.rm = TRUE, targ = NULL) {
