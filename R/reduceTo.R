@@ -74,7 +74,7 @@ reduceTo <- function(data, n.items, n.sets = 5, item.names = FALSE, r.sq = FALSE
   
   # Generate mean scores across all item sets and participants
   for (i in 1:num_combinations) {
-    comb_scores[, i] <- rowMeans(data[, item_combinations[, i]], na.rm = na.rm)
+    comb_scores[, i] <- rowMeans(data[, item_combinations[, i], drop = FALSE], na.rm = na.rm)
   }
   
   # --- Name the Results ---
