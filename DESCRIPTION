@@ -5,4 +5,4 @@ Author: Paddy Maher
 Description: A function to find the optimal subset of items for a short-form scale by systematically evaluating all combinations against a criterion.
 License: MIT
 Encoding: UTF-8
-RoxygenNote: 7.3.2
+RoxygenNote: 7.3.3

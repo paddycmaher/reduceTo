@@ -13,7 +13,9 @@ reduceTo(
   generate = FALSE,
   item.set = 1,
   na.rm = TRUE,
-  targ = NULL
+  targ = NULL,
+  optimise = NULL,
+  ceiling = 10^5
 )
 }
 \arguments{
@@ -24,54 +26,69 @@ reduceTo(
 \item{n.sets}{The number of top-performing item sets to return. Defaults to 5.}
 
 \item{item.names}{Logical. If TRUE, the output will list the item names instead
-of their column numbers in the supplied matrix. Defaults to FALSE.}
+of their column numbers. Defaults to FALSE.}
 
 \item{r.sq}{Logical. If TRUE, the squared correlation (R-squared) is returned
 alongside the correlation. Defaults to FALSE.}
 
 \item{generate}{Logical. If TRUE, the function returns the computed scores for
-the single best item set instead of the correlation list. Defaults to FALSE.}
+the single best item set. Defaults to FALSE.}
 
 \item{item.set}{An integer specifying which item set to generate scores for
-(e.g., 1 for the best set, 2 for the second-best). Only used if `generate = TRUE`.}
+(e.g., 1 for the best set). Only used if `generate = TRUE`.}
 
 \item{na.rm}{Logical. If TRUE, missing values are handled by pairwise deletion
 or row-wise removal in means. Defaults to TRUE.}
 
-\item{targ}{An optional numeric vector to serve as the target criterion for the
-correlations. If NULL (the default), the mean score of the full scale is used.}
+\item{targ}{An optional numeric vector to serve as the target criterion.
+If NULL (the default), the mean score of the full scale is used.}
+
+\item{optimise}{Logical or NULL. Controls the optimisation process.
+- `NULL` (default): If combinations exceed `ceiling`, prompts the user to
+  choose between continuing, optimising, or quitting.
+- `TRUE`: Automatically runs the optimisation process if combinations
+  exceed `ceiling`.
+- `FALSE`: Proceeds with the full, non-optimised process, even if
+  combinations exceed `ceiling` (after a warning).}
+
+\item{ceiling}{Numeric. The number of combinations above which the `optimise`
+prompt or process is triggered. Defaults to 100,000.}
 }
 \value{
-Depending on the arguments, either a data.frame listing the top `n.sets`
-  of items and their correlation with the target, or a numeric vector of scores
-  generated from the `item.set`.
+A data.frame listing the top `n.sets` of items and their correlation
+  with the target. If `generate = TRUE`, returns a numeric vector of scores
+  for the selected `item.set`.
 }
 \description{
-This function systematically evaluates all possible subsets of a given number of items
-from a larger scale to find the combination that correlates most highly with a
-target criterion (by default, the total score of the full scale). It includes
-an initial step to automatically reverse-code items as needed based on their
-correlation with the most central item.
+This function systematically evaluates subsets of items from a larger scale
+to find the combination that correlates most highly with a target criterion.
+It includes optimizations for handling a very large number of combinations,
+such as iterative item reduction (optimisation) and memory-efficient batch processing.
 }
 \examples{
-library(MASS)
-set.seed(42) # For reproducibility
-# 1. Define your desired factor loadings.
-loadings <- c(rnorm(10,0.75,0.08)*sign(rnorm(10)))
+\dontrun{
+library(MASS) 
+# Note: The 'psych' package is required for pca() if using optimisation.
+library(psych)
 
-# 2. Create the target correlation matrix from the loadings.
+# 1. Create simulated data
+set.seed(42)
+loadings <- c(rnorm(10,0.75,0.08)*sign(rnorm(10)))
 target_cor_matrix <- outer(loadings, loadings)
 diag(target_cor_matrix) <- 1
-
-# 3. Generate data from that correlation structure.
-simulated_data <- mvrnorm(n = 200,mu = rep(0, 10),Sigma = target_cor_matrix,empirical = TRUE)
-
-# 4. Finalize the data frame and add names.
+simulated_data <- MASS::mvrnorm(n = 200, mu = rep(0, 10), 
+                                Sigma = target_cor_matrix, empirical = TRUE)
 simulated_data <- as.data.frame(simulated_data)
 colnames(simulated_data) <- paste0("item_", 1:10)
 
-# 5. Reduce the scale to 3 items.
-reduceTo(simulated_data,3)
+# 2. Reduce the scale to 3 items
+reduceTo(simulated_data, 3)
+
+# 3. Reduce a larger set, triggering the optimisation
+large_data <- as.data.frame(matrix(rnorm(200*30), 200, 30))
+colnames(large_data) <- paste0("item_", 1:30)
+reduceTo(large_data, 5, optimise = TRUE, item.names = TRUE)
+}
 
 }
 \author{
