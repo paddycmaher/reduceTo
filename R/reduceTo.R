@@ -68,7 +68,7 @@
 
 reduceTo <- function (data, n.items, n.sets = 5, item.names = FALSE, r.sq = FALSE, 
                       generate = FALSE, item.set = 1, na.rm = TRUE, targ = NULL, 
-                      optimise = NULL, scale = F, ceiling = 10^5) 
+                      optimise = NULL, scale.vars = F, ceiling = 10^5) 
 {
   
   # --- Helper Function for Optimisation ---
@@ -143,17 +143,16 @@ reduceTo <- function (data, n.items, n.sets = 5, item.names = FALSE, r.sq = FALS
   
   # --- Data Preparation ---
   # Flip all items to be positively correlated with the most central item
-  dc <- cor(data, use = "pairwise.complete.obs")
-  most_central_item <- order(colSums(abs(dc), na.rm = TRUE), decreasing = TRUE)[1]
-  items_to_flip <- dc[, most_central_item] < 0
-  if (scale) {
-    data <- apply(data,2,scale,scale = F)
-    data[, items_to_flip] <- data[, items_to_flip] * -1
+  if (is.null(targ)){
+    dc <- cor(data, use = "pairwise.complete.obs")
+    most_central_item <- order(colSums(abs(dc), na.rm = TRUE), decreasing = TRUE)[1]
+    items_to_flip <- dc[, most_central_item] < 0
   } else {
-    data <- apply(data,2,scale)
-    data[, items_to_flip] <- data[, items_to_flip] * -1
+    items_to_flip <- as.vector(cor(data, targ, use = "pairwise.complete.obs")) < 0
   }
   
+  data <- apply(data,2,scale,scale = scale.vars)
+  data[, items_to_flip] <- data[, items_to_flip] * -1
   data <- as.matrix(data) 
   
   # --- Batch Processing ---
