@@ -15,6 +15,7 @@ reduceTo(
   na.rm = TRUE,
   targ = NULL,
   optimise = NULL,
+  scale = F,
   ceiling = 10^5
 )
 }
@@ -50,6 +51,9 @@ If NULL (the default), the mean score of the full scale is used.}
   exceed `ceiling`.
 - `FALSE`: Proceeds with the full, non-optimised process, even if
   combinations exceed `ceiling` (after a warning).}
+
+\item{scale}{Logical. Defaults to FALSE, in which case mean-centered; if TRUE it will mean-centre and scale
+all columns in the dataset.}
 
 \item{ceiling}{Numeric. The number of combinations above which the `optimise`
 prompt or process is triggered. Defaults to 100,000.}

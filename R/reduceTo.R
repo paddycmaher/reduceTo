@@ -28,6 +28,8 @@
 #'     exceed `ceiling`.
 #'   - `FALSE`: Proceeds with the full, non-optimised process, even if
 #'     combinations exceed `ceiling` (after a warning).
+#' @param scale Logical. Defaults to FALSE, in which case mean-centered; if TRUE it will mean-centre and scale
+#'   all columns in the dataset.
 #' @param ceiling Numeric. The number of combinations above which the `optimise`
 #'   prompt or process is triggered. Defaults to 100,000.
 #'
@@ -66,7 +68,7 @@
 
 reduceTo <- function (data, n.items, n.sets = 5, item.names = FALSE, r.sq = FALSE, 
                       generate = FALSE, item.set = 1, na.rm = TRUE, targ = NULL, 
-                      optimise = NULL, ceiling = 10^5) 
+                      optimise = NULL, scale = F, ceiling = 10^5) 
 {
   
   # --- Helper Function for Optimisation ---
@@ -144,9 +146,15 @@ reduceTo <- function (data, n.items, n.sets = 5, item.names = FALSE, r.sq = FALS
   dc <- cor(data, use = "pairwise.complete.obs")
   most_central_item <- order(colSums(abs(dc), na.rm = TRUE), decreasing = TRUE)[1]
   items_to_flip <- dc[, most_central_item] < 0
-  data[, items_to_flip] <- data[, items_to_flip] * -1
-  data <- as.matrix(data) # Convert to matrix for faster subsetting
+  if (scale) {
+    data <- apply(data,2,scale,scale = F)
+    data[, items_to_flip] <- data[, items_to_flip] * -1
+  } else {
+    data <- apply(data,2,scale)
+    data[, items_to_flip] <- data[, items_to_flip] * -1
+  }
   
+  data <- as.matrix(data) 
   
   # --- Batch Processing ---
   # This section is designed to handle a large number of combinations
@@ -233,7 +241,7 @@ reduceTo <- function (data, n.items, n.sets = 5, item.names = FALSE, r.sq = FALS
     }
     
     # Return the row means for the requested item set
-    return(rowMeans(data[, best_set_indices, drop = FALSE], na.rm = na.rm))
+    return(scale(rowMeans(data[, best_set_indices, drop = FALSE], na.rm = na.rm)))
   }
   
   if (r.sq) {
