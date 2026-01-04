@@ -15,7 +15,7 @@ reduceTo(
   na.rm = TRUE,
   targ = NULL,
   optimise = NULL,
-  scale.vars = F,
+  scale.vars = FALSE,
   ceiling = 10^5
 )
 }

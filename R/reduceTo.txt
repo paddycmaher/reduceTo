@@ -74,6 +74,8 @@ reduceTo <- function (data, n.items, n.sets = 5, item.names = FALSE, r.sq = FALS
   # --- Helper Function for Optimisation ---
   perform_optimisation <- function(current_cols, data, n.items, ceiling, targ) {
     
+    # [PERF] No need to check is.numeric here; handled in main setup now.
+    
     num_combs <- choose(length(current_cols), n.items)
     
     # Limit data to 20k rows during the optimisation process
@@ -126,6 +128,7 @@ reduceTo <- function (data, n.items, n.sets = 5, item.names = FALSE, r.sq = FALS
   all_original_indices <- 1:ncol(data)
   
   # 2. Identify Numeric Columns that are NOT all NA
+  # Using sapply is efficient enough here even for large cols
   valid_mask <- sapply(data, function(x) is.numeric(x) && !all(is.na(x)))
   
   if (sum(valid_mask) < n.items) {
@@ -133,9 +136,12 @@ reduceTo <- function (data, n.items, n.sets = 5, item.names = FALSE, r.sq = FALS
   }
   
   # 3. Filter the dataset
+  # We overwrite 'data' with only the valid columns
   data <- data[, valid_mask]
   
   # 4. Update the Index Tracker
+  # 'cols' starts as 1..N of the NEW valid data
+  # 'original_indices' keeps track of where these came from in the raw file
   cols <- 1:ncol(data)
   original_indices <- all_original_indices[valid_mask]
   
@@ -169,6 +175,7 @@ reduceTo <- function (data, n.items, n.sets = 5, item.names = FALSE, r.sq = FALS
   # --- Data Preparation ---
   
   # Update 'original_indices' to reflect only the OPTIMISED columns
+  # 'cols' currently contains indices of the 'data' matrix (which is already filtered for numeric)
   original_indices <- original_indices[cols] 
   
   # Subset data to optimised set
@@ -218,6 +225,7 @@ reduceTo <- function (data, n.items, n.sets = 5, item.names = FALSE, r.sq = FALS
                                                       r = cor_results_batch[,1]))
     leaderboard <- combined_results[order(abs(combined_results$r), decreasing = TRUE), ]
     leaderboard <- head(leaderboard, n.sets)
+    rownames(leaderboard) <- 1:n.sets
     
     cat('\rProcessing Batch:', j, 'of', num_batches, 
         '| Total combinations:', format(num_combinations_final, big.mark = ","))
@@ -225,73 +233,65 @@ reduceTo <- function (data, n.items, n.sets = 5, item.names = FALSE, r.sq = FALS
   }
   
   cat('\r', rep(' ', 80), '\n', sep = '')
-  
-  # Clean up leaderboard rownames (just use 1 to N)
-  # The combination string is preserved in the column 'combination'
-  rownames(leaderboard) <- NULL 
+  best_set_string <- leaderboard$combination[item.set]
+  best_set_indices <- as.numeric(strsplit(best_set_string, ',')[[1]])
   
   # --- Return Desired Output ---
   
-  # Extract the BEST set (Rank 1) for the summary object
-  # We look at the 'combination' column, not rownames
-  top_set_string <- leaderboard$combination[1]
-  top_set_vec <- strsplit(top_set_string, ',')[[1]]
+  # 1. Helper logic to extract indices/names for the BEST set (Rank 1)
+  #    We do this automatically so you always have the best indices saved.
+  top_set_string <- rownames(leaderboard)[1] 
+  top_indices_raw <- as.numeric(strsplit(top_set_string, ',')[[1]])
   
   best_names <- NULL
   best_indices <- NULL
   
-  # LOGIC: Use 'item.names' argument to decide how to parse, avoiding NAs
-  if (item.names) {
-    # If item.names=TRUE, the string contains NAMES (e.g., "Item_A,Item_B")
-    best_names <- top_set_vec
-    
-    # We need to map these names back to Original Indices for the user's reference
-    # 1. Find which column number in the current 'data' matrix matches the name
-    local_indices <- match(best_names, colnames(data))
-    # 2. Map local index to Original index
-    best_indices <- original_indices[local_indices]
-    
+  if (any(is.na(top_indices_raw))) {
+    # Case: Item Names were used
+    best_names <- strsplit(top_set_string, ',')[[1]]
+    # Try to find indices if possible
+    best_indices <- match(best_names, colnames(data)) 
   } else {
-    # If item.names=FALSE, the string contains INDICES (e.g., "55, 102")
-    best_indices <- as.numeric(top_set_vec)
-    
-    # We need to map these indices to Names for the user's reference
-    # 1. Find the local index in 'data' that corresponds to this Original Index
+    # Case: Numeric Indices were used
+    best_indices <- top_indices_raw
+    # Find the corresponding names
+    # Note: We need to map Original Indices -> Local Data Indices -> Names
     local_indices <- match(best_indices, original_indices)
-    # 2. Get the name of that column
     best_names <- colnames(data)[local_indices]
   }
   
-  # Generate Scores (if requested)
+  # 2. Generate Scores (if requested)
+  #    If generate=TRUE, we calculate the scores and put them in the list.
   computed_scores <- NULL
   if (generate) {
-    # Use the specific item.set requested by the user
-    target_set_string <- leaderboard$combination[item.set]
-    target_vec <- strsplit(target_set_string, ',')[[1]]
+    # Use the specific item.set requested by the user (default is 1)
+    target_set_string <- rownames(leaderboard)[item.set]
+    target_indices_raw <- as.numeric(strsplit(target_set_string, ',')[[1]])
     
-    if (item.names) {
-      # We have names, so we can subset 'data' directly by name
-      # (data still has colnames attached)
-      computed_scores <- scale(rowMeans(data[, target_vec, drop = FALSE], na.rm = na.rm))
+    if (any(is.na(target_indices_raw))) {
+      # Names input
+      target_cols <- strsplit(target_set_string, ',')[[1]]
+      computed_scores <- scale(rowMeans(data[, target_cols, drop = FALSE], na.rm = na.rm))
     } else {
-      # We have Original Indices. We CANNOT subset 'data' with these directly
-      # because 'data' is smaller now. We must map to Local Indices.
-      target_indices_raw <- as.numeric(target_vec)
-      local_indices <- match(target_indices_raw, original_indices)
-      computed_scores <- scale(rowMeans(data[, local_indices, drop = FALSE], na.rm = na.rm))
+      # Numeric input
+      target_local <- match(target_indices_raw, original_indices)
+      computed_scores <- scale(rowMeans(data[, target_local, drop = FALSE], na.rm = na.rm))
     }
   }
   
-  # Construct the Final Object
+  # 3. Construct the Final Object
+  #    This list holds EVERYTHING.
   results_object <- list(
-    leaderboard = leaderboard,       
-    best_indices = best_indices,     
-    best_names = best_names,         
-    scores = computed_scores,        
-    params = list(n.items = n.items, 
+    leaderboard = leaderboard,       # The table you see
+    best_indices = best_indices,     # The numeric indices of the #1 set
+    best_names = best_names,         # The character names of the #1 set
+    scores = computed_scores,        # The calculated scores (if generate=TRUE)
+    params = list(n.items = n.items, # Metadata
                   n.sets = n.sets)
   )
   
+  # 4. Assign a Class
+  #    This tells R to use our custom print function below
   class(results_object) <- "reduced_scale"
   
   return(results_object)
@@ -309,9 +309,6 @@ print.reduced_scale <- function(x, ...) {
   cat("\n----------------------------------------")
   if (!is.null(x$best_indices)) {
     cat("\nBest Items (Indices):", paste(x$best_indices, collapse = ", "))
-  }
-  if (!is.null(x$best_names)) {
-    cat("\nBest Items (Names):  ", paste(x$best_names, collapse = ", "))
   }
   if (!is.null(x$scores)) {
     cat("\nScores generated: Yes (Access via $scores)")
