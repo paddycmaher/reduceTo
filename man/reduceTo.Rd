@@ -12,62 +12,92 @@ reduceTo(
   r.sq = FALSE,
   generate = FALSE,
   item.set = 1,
-  na.rm = TRUE,
   targ = NULL,
+  cross.validate = FALSE,
   optimise = NULL,
+  factors = 1,
+  ceiling = 10^6,
   scale.vars = FALSE,
-  ceiling = 10^5
+  na.rm = TRUE
 )
 }
 \arguments{
-\item{data}{A numeric matrix or data.frame containing the item responses.}
+\item{data}{A matrix or data.frame containing the item responses.}
 
 \item{n.items}{The desired number of items in the final short-form scale.}
 
 \item{n.sets}{The number of top-performing item sets to return. Defaults to 5.}
 
-\item{item.names}{Logical. If TRUE, the output will list the item names instead
-of their column numbers. Defaults to FALSE.}
+\item{item.names}{Logical. If \code{TRUE}, the output will list the item names instead
+of their column numbers. Defaults to \code{FALSE}.}
 
-\item{r.sq}{Logical. If TRUE, the squared correlation (R-squared) is returned
-alongside the correlation. Defaults to FALSE.}
+\item{r.sq}{Logical. If \code{TRUE}, the squared correlation ($R^2$) is returned
+alongside the correlation. Defaults to \code{FALSE}.}
 
-\item{generate}{Logical. If TRUE, the function returns the computed scores for
-the single best item set. Defaults to FALSE.}
+\item{generate}{Logical. If \code{TRUE}, the function returns the computed scores for
+the single best item set. Defaults to \code{FALSE}.}
 
-\item{item.set}{An integer specifying which item set to generate scores for
-(e.g., 1 for the best set). Only used if `generate = TRUE`.}
-
-\item{na.rm}{Logical. If TRUE, missing values are handled by pairwise deletion
-or row-wise removal in means. Defaults to TRUE.}
+\item{item.set}{Integer. Specifies which item set to generate scores for
+(e.g., 1 for the best set). Only used if \code{generate = TRUE}.}
 
 \item{targ}{An optional numeric vector to serve as the target criterion.
-If NULL (the default), the mean score of the full scale is used.}
+\itemize{
+  \item \code{NULL} (default): The mean score of the full scale is used as the target.
+  \item \strong{Numeric Vector}: An external criterion (e.g., depression severity).
+  \item \strong{Binary Vector}: A 0/1 vector (e.g., case/control). This effectively maximizes 
+  the point-biserial correlation, selecting items that best discriminate at a specific threshold 
+  (functionally similar to selecting for high Information in IRT).
+}}
 
-\item{optimise}{Logical or NULL. Controls the optimisation process.
-- `NULL` (default): If combinations exceed `ceiling`, prompts the user to
+\item{cross.validate}{Logical. If \code{TRUE}, performs 5-fold cross-validation on the 
+top candidate sets. The leaderboard is re-ranked based on the average correlation in the 
+holdout folds to penalize overfitting. Recommended for small samples ($N < 1000$). 
+Defaults to \code{FALSE}.}
+
+\item{optimise}{Logical or \code{NULL}. Controls the heuristic pruning process for large item pools.
+\itemize{
+  \item \code{NULL} (default): If combinations exceed \code{ceiling}, prompts the user to
   choose between continuing, optimising, or quitting.
-- `TRUE`: Automatically runs the optimisation process if combinations
-  exceed `ceiling`.
-- `FALSE`: Proceeds with the full, non-optimised process, even if
-  combinations exceed `ceiling` (after a warning).}
+  \item \code{TRUE}: Automatically runs the optimisation process (iteratively discarding 
+  weak items) if combinations exceed \code{ceiling}.
+  \item \code{FALSE}: Proceeds with the full, exhaustive process, even if
+  combinations exceed \code{ceiling} (after a warning).
+}}
 
-\item{ceiling}{Numeric. The number of combinations above which the `optimise`
+\item{factors}{Integer. The number of factors to extract during the PCA-based optimisation 
+step. Only used if \code{targ = NULL} and optimisation is triggered. Defaults to 1.}
+
+\item{ceiling}{Numeric. The number of combinations above which the \code{optimise}
+prompt or process is triggered. Defaults to 1,000,000.}
+
+\item{scale.vars}{Logical. If \code{TRUE}, all columns are mean-centered and scaled before 
+analysis. Defaults to \code{FALSE}.}
+
+\item{na.rm}{Logical. If \code{TRUE}, missing values are handled by pairwise deletion
+in correlations and row-wise removal in mean calculations. Defaults to \code{TRUE}.hich the `optimise`
 prompt or process is triggered. Defaults to 100,000.}
-
-\item{scale}{Logical. Defaults to FALSE, in which case mean-centered; if TRUE it will mean-centre and scale
-all columns in the dataset.}
 }
 \value{
-A data.frame listing the top `n.sets` of items and their correlation
-  with the target. If `generate = TRUE`, returns a numeric vector of scores
-  for the selected `item.set`.
+A list object of class \code{reduced_scale} containing:
+  \itemize{
+    \item \code{output}: A data.frame listing the top \code{n.sets} and their correlations.
+    \item \code{best_indices} / \code{best_names}: The identifiers for the top-ranked set.
+    \item \code{scores}: The calculated scores for the selected set (if \code{generate = TRUE}).
+  }
 }
 \description{
 This function systematically evaluates subsets of items from a larger scale
 to find the combination that correlates most highly with a target criterion.
-It includes optimizations for handling a very large number of combinations,
+It includes optimisations for handling very large numbers of item combinations,
 such as iterative item reduction (optimisation) and memory-efficient batch processing.
+
+The function can optimise for either:
+\itemize{
+  \item \strong{Scale Preservation:} (Default) Maximizing the correlation between the short form 
+  and the total score of the parent scale.
+  \item \strong{Criterion Validity:} Maximizing the prediction of an external variable (e.g., 
+  behaviour, a clinical diagnosis, or a future outcome).
+}
 }
 \examples{
 \dontrun{
@@ -85,13 +115,13 @@ simulated_data <- MASS::mvrnorm(n = 200, mu = rep(0, 10),
 simulated_data <- as.data.frame(simulated_data)
 colnames(simulated_data) <- paste0("item_", 1:10)
 
-# 2. Reduce the scale to 3 items
+# 2. Reduce the scale to 3 items (Internal Consistency)
 reduceTo(simulated_data, 3)
 
-# 3. Reduce a larger set, triggering the optimisation
-large_data <- as.data.frame(matrix(rnorm(200*30), 200, 30))
-colnames(large_data) <- paste0("item_", 1:30)
-reduceTo(large_data, 5, optimise = TRUE, item.names = TRUE)
+# 3. Reduce with external target and cross-validation
+# (Simulating a binary target)
+bin_target <- ifelse(rowMeans(simulated_data) > 0, 1, 0)
+reduceTo(simulated_data, 3, targ = bin_target, cross.validate = TRUE)
 }
 
 }
