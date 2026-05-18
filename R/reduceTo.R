@@ -1,80 +1,74 @@
 #' Find Optimal Short-Form Scales
 #'
-#' @description
-#' Systematically evaluates all possible subsets of items from a larger scale to find the combination that maximizes either internal consistency or correlation with an external criterion.
-#' 
-#' Runs on a parallelised C++ backend with memory-optimised data structures (8-bit compression) to evaluate millions of combinations in seconds.
-#' 
+#' Systematically evaluates all possible subsets of items from a larger scale to 
+#' find the combination that maximises either internal consistency or correlation 
+#' with an external criterion. Runs on a parallelised C++ backend with 
+#' memory-optimised data structures (8-bit compression) to evaluate millions of 
+#' combinations in seconds.
+#'
+#' @details
 #' \strong{Key Features:}
 #' \itemize{
 #'   \item \strong{Combinatorial Search}: Exhaustively scores item subsets to guarantee finding the best-performing item set within the search space.
 #'   \item \strong{Heuristic Optimisation}: When the number of combinations exceeds the computational ceiling, the function automatically reduces the item pool through a beam search before searching.
 #'   \item \strong{Cross-Validation}: Supports a Train/Holdout split (default 75/25) to validate findings and prevent overfitting. Reports performance metrics for both the training and holdout samples side-by-side.
-#'   \item \strong{Binary Classifications}: For binary targets (0/1), automatically finds the optimal integer cut-off score to maximize classification accuracy (Youden's J) or binarised correlation.
+#'   \item \strong{Binary Classifications}: For binary targets (0/1), automatically finds the optimal integer cut-off score to maximise classification accuracy (Youden's J) or binarised correlation.
 #' }
 #'
 #' @param data Matrix or data.frame containing item responses
 #' @param n.items Desired number of items in the final short-form scale
+#' @param target Optional target criterion. Can be specified as: NULL (default) for 
+#'   internal consistency, an unquoted column name from data, or an external vector 
+#'   (numeric criterion or binary 0/1 for classification)
 #' @param n.sets Number of top-performing item sets to return (default: 5)
 #' @param item.names If TRUE, output lists item names instead of column numbers (default: FALSE)
 #' @param r.sq If TRUE, returns R² alongside correlation (default: FALSE)
 #' @param generate If TRUE, returns computed scores for selected item set (default: FALSE)
 #' @param item.set Which ranked set to generate scores for, used with generate = TRUE (default: 1)
-#' @param target Optional target criterion. Can be specified as:
-#'   \itemize{
-#'     \item NULL (default): Optimizes for Internal Consistency (Correlation with full scale score).
-#'     \item Unquoted column name from data (e.g., target = outcome_var).
-#'     \item External vector: Numeric criterion or binary (0/1) for classification.
-#'   }
-#' @param cross.validate Numeric input controlling a data split into Training/Holdout sets; if TRUE or 1, uses a 75%/25% split (default: FALSE)
-#' @param optimise Controls heuristic pruning for large item pools:
-#'   \itemize{
-#'     \item TRUE (default): Automatically optimises if combinations exceed ceiling.
-#'     \item FALSE: Forces exhaustive search (warning: can be slow).
-#'   }
-#' @param beam.width The number of top-performing subsets retained at each expansion stage during heuristic optimisation. Lower values increase speed; higher values avoid discarding of complex synergistic item sets (default: 2000).
-#' @param opt.n The maximum number of cases (rows) to subsample during the heuristic beam search. Accelerates computation on large datasets without sacrificing optimization accuracy (default: 5000).
-#' @param ceiling Combination threshold triggering optimization (default: 10,000,000)
+#' @param show.progress If TRUE, displays progress bar during computation (default: TRUE)
+#' @param cross.validate Numeric input controlling a data split into Training/Holdout 
+#'   sets; if TRUE or 1, uses a 75\%/25\% split (default: FALSE)
+#' @param optimise Controls heuristic pruning for large item pools: TRUE (default) 
+#'   automatically optimises if combinations exceed ceiling; FALSE forces exhaustive 
+#'   search (can be slow)
+#' @param beam.width The number of top-performing subsets retained at each expansion 
+#'   stage during heuristic optimisation (default: 2000)
+#' @param opt.n The maximum number of cases (rows) to subsample during the heuristic 
+#'   beam search (default: 5000)
+#' @param ceiling Combination threshold triggering optimisation (default: 500,000)
 #' @param scale.vars If TRUE, mean-centers and scales all columns (default: FALSE)
 #' @param na.rm If TRUE, handles missing values via pairwise deletion (default: TRUE)
-#' @param method Metric for ranking combinations (default: NULL for auto-selection):
-#'   \itemize{
-#'     \item "r": Pearson correlation of sum score with target
-#'     \item "youden_j": Youden's Index (Sensitivity + Specificity - 1) (Binary targets)
-#'     \item "binarised_r": Correlation of binarised sum score with target (Binary targets)
-#'   }
+#' @param method Metric for ranking combinations (default: NULL for auto-selection): 
+#'   "r" for Pearson correlation, "youden_j" for Youden's Index, or "binarised_r" 
+#'   for correlation of binarised sum score (binary targets)
 #'
 #' @return A list of class \code{reduced_scale} containing:
-#'   \describe{
-#'     \item{output}{Data frame of the top \code{n.sets} combinations and their performance metrics.}
-#'     \item{leaderboard}{Extended data frame of the top 100 combinations.}
-#'     \item{best_names}{Character vector of item names in the top-ranked set.}
-#'     \item{best_indices}{Integer vector of column indices in the top-ranked set.}
-#'     \item{scores}{(If \code{generate = TRUE}) A data frame containing the sum scores (and binary classifications if applicable) for the top set.}
-#'     \item{binary_info}{(If binary target) A list containing optimal cutoffs, classification metrics (Youden's J, Sensitivity, Specificity), and training vs. holdout comparisons.}
-#'     \item{params}{List of parameters used in the function call.}
-#'   }
+#' \describe{
+#'   \item{output}{Data frame of the top n.sets combinations and their performance metrics}
+#'   \item{leaderboard}{Extended data frame of the top 100 combinations}
+#'   \item{best_names}{Character vector of item names in the top-ranked set}
+#'   \item{best_indices}{Integer vector of column indices in the top-ranked set}
+#'   \item{scores}{(If generate = TRUE) A data frame containing the sum scores}
+#'   \item{binary_info}{(If binary target) A list containing optimal cutoffs and classification metrics}
+#'   \item{params}{List of parameters used in the function call}
+#' }
 #'
-#' @author Paddy Maher, Goldsmiths, University of London
+#' @author Paddy Maher, Max Planck Institute for Human Development
 #' @export
 #'
 #' @examples
 #' \donttest{
-#' # 1. Create a simple simulated dataset (200 cases, 10 items)
+#' # Create a simple simulated dataset
 #' set.seed(123)
 #' data <- as.data.frame(matrix(rnorm(200 * 10), ncol = 10))
 #' colnames(data) <- paste0("Item_", 1:10)
 #' 
-#' # 2. Internal Consistency Optimization
-#' # Reduce to 5 items that best maintain the full scale's ranking
+#' # Internal Consistency Optimisation
 #' results_scale <- reduceTo(data, n.items = 5)
 #' print(results_scale)
 #' 
-#' # 3. Criterion Validity Optimization (Binary Target)
-#' # Create a binary target (e.g., Clinical Diagnosis vs Control)
+#' # Criterion Validity Optimisation (Binary Target)
 #' target <- ifelse(rowMeans(data) > 0, 1, 0)
-#' 
-#' # Find the best 3 items to predict this target, using Cross-Validation
 #' results_binary <- reduceTo(data, n.items = 3, target = target, cross.validate = TRUE)
 #' print(results_binary)
 #' }

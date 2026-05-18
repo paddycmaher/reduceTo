@@ -1,12 +1,14 @@
 Package: reduceTo
-Title: An R function for optimal short-scale derivation
-Version: 1.0.0
-Author: Paddy Maher
-Description: A function to find the optimal subset of items for a short-form scale by systematically evaluating all combinations against a criterion.
-License: MIT
+Type: Package
+Version: 1.1.0
+Title: Optimal Short-Form Scale Construction
+Description: Find optimal item subsets through combinatorial search.
+Authors@R: person("Paddy", "Maher", email = "paddycarstenmaher@gmail.com",role = c("aut","cre"))
+License: MIT + file LICENSE
 Encoding: UTF-8
-RoxygenNote: 7.3.3
-Depends: R (>= 3.5.0)
-Imports: Rcpp, RcppParallel
-LinkingTo: Rcpp, RcppParallel
+LazyData: true
+Depends: R (>= 4.0.0)
+Imports: Rcpp,RcppParallel
+LinkingTo: Rcpp,RcppParallel
 SystemRequirements: C++11
+RoxygenNote: 8.0.0
