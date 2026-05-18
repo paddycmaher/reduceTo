@@ -246,8 +246,8 @@ Estimated processing times (N = 5,000 participants, 2024 hardware):
 ## Citation
 
 ```         
-Maher, P. (2025). reduceTo: High-Performance Combinatorial Scale Optimisation.
-R package version 1.1.0. https://github.com/paddycm/reduceTo
+Maher, P. (2026). reduceTo: High-Performance Combinatorial Scale Optimisation.
+R package version 1.1.0. https://github.com/paddycmaher/reduceTo
 ```
 
 ------------------------------------------------------------------------
@@ -256,8 +256,8 @@ R package version 1.1.0. https://github.com/paddycm/reduceTo
 
 **Paddy Maher**\
 Max Planck Institute for Human Development\
-[paddycarstenmaher\@gmail.com](mailto:paddycarstenmaher@gmail.com){.email}
+[paddycarstenmaher\@gmail.com](mailto:paddycarstenmaher@gmail.com)
 
 ------------------------------------------------------------------------
 
-**License:** MIT \| **Version:** 1.1.0 \| **Updated:** January 2025
+**License:** MIT \| **Version:** 1.1.0 \| **Updated:** May 2025
