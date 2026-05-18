@@ -6,3 +6,7 @@ Description: A function to find the optimal subset of items for a short-form sca
 License: MIT
 Encoding: UTF-8
 RoxygenNote: 7.3.3
+Depends: R (>= 3.5.0)
+Imports: Rcpp, RcppParallel
+LinkingTo: Rcpp, RcppParallel
+SystemRequirements: C++11

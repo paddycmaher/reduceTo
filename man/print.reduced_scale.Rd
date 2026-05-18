@@ -2,10 +2,10 @@
 % Please edit documentation in R/reduceTo.R
 \name{print.reduced_scale}
 \alias{print.reduced_scale}
-\title{Print method for reduceTo results}
+\title{Print Method for reduced_scale Objects}
 \usage{
 \method{print}{reduced_scale}(x, ...)
 }
 \description{
-Print method for reduceTo results
+Print Method for reduced_scale Objects
 }

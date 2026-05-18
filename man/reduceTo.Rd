@@ -7,124 +7,116 @@
 reduceTo(
   data,
   n.items,
+  target = NULL,
   n.sets = 5,
   item.names = FALSE,
   r.sq = FALSE,
-  generate = FALSE,
+  generate = TRUE,
   item.set = 1,
-  targ = NULL,
-  cross.validate = FALSE,
-  optimise = NULL,
-  factors = 1,
-  ceiling = 10^6,
+  show.progress = T,
+  cross.validate = 0,
+  optimise = TRUE,
+  beam.width = 2000,
+  opt.n = 5000,
+  ceiling = 5e+05,
   scale.vars = FALSE,
-  na.rm = TRUE
+  na.rm = TRUE,
+  method = NULL
 )
 }
 \arguments{
-\item{data}{A matrix or data.frame containing the item responses.}
+\item{data}{Matrix or data.frame containing item responses}
 
-\item{n.items}{The desired number of items in the final short-form scale.}
+\item{n.items}{Desired number of items in the final short-form scale}
 
-\item{n.sets}{The number of top-performing item sets to return. Defaults to 5.}
-
-\item{item.names}{Logical. If \code{TRUE}, the output will list the item names instead
-of their column numbers. Defaults to \code{FALSE}.}
-
-\item{r.sq}{Logical. If \code{TRUE}, the squared correlation ($R^2$) is returned
-alongside the correlation. Defaults to \code{FALSE}.}
-
-\item{generate}{Logical. If \code{TRUE}, the function returns the computed scores for
-the single best item set. Defaults to \code{FALSE}.}
-
-\item{item.set}{Integer. Specifies which item set to generate scores for
-(e.g., 1 for the best set). Only used if \code{generate = TRUE}.}
-
-\item{targ}{An optional numeric vector to serve as the target criterion.
+\item{target}{Optional target criterion. Can be specified as:
 \itemize{
-  \item \code{NULL} (default): The mean score of the full scale is used as the target.
-  \item \strong{Numeric Vector}: An external criterion (e.g., depression severity).
-  \item \strong{Binary Vector}: A 0/1 vector (e.g., case/control). This effectively maximizes 
-  the point-biserial correlation, selecting items that best discriminate at a specific threshold 
-  (functionally similar to selecting for high Information in IRT).
+  \item NULL (default): Optimizes for Internal Consistency (Correlation with full scale score).
+  \item Unquoted column name from data (e.g., target = outcome_var).
+  \item External vector: Numeric criterion or binary (0/1) for classification.
 }}
 
-\item{cross.validate}{Logical. If \code{TRUE}, performs 5-fold cross-validation on the 
-top candidate sets. The leaderboard is re-ranked based on the average correlation in the 
-holdout folds to penalize overfitting. Recommended for small samples ($N < 1000$). 
-Defaults to \code{FALSE}.}
+\item{n.sets}{Number of top-performing item sets to return (default: 5)}
 
-\item{optimise}{Logical or \code{NULL}. Controls the heuristic pruning process for large item pools.
+\item{item.names}{If TRUE, output lists item names instead of column numbers (default: FALSE)}
+
+\item{r.sq}{If TRUE, returns R² alongside correlation (default: FALSE)}
+
+\item{generate}{If TRUE, returns computed scores for selected item set (default: FALSE)}
+
+\item{item.set}{Which ranked set to generate scores for, used with generate = TRUE (default: 1)}
+
+\item{cross.validate}{Numeric input controlling a data split into Training/Holdout sets; if TRUE or 1, uses a 75%/25% split (default: FALSE)}
+
+\item{optimise}{Controls heuristic pruning for large item pools:
 \itemize{
-  \item \code{NULL} (default): If combinations exceed \code{ceiling}, prompts the user to
-  choose between continuing, optimising, or quitting.
-  \item \code{TRUE}: Automatically runs the optimisation process (iteratively discarding 
-  weak items) if combinations exceed \code{ceiling}.
-  \item \code{FALSE}: Proceeds with the full, exhaustive process, even if
-  combinations exceed \code{ceiling} (after a warning).
+  \item TRUE (default): Automatically optimises if combinations exceed ceiling.
+  \item FALSE: Forces exhaustive search (warning: can be slow).
 }}
 
-\item{factors}{Integer. The number of factors to extract during the PCA-based optimisation 
-step. Only used if \code{targ = NULL} and optimisation is triggered. Defaults to 1.}
+\item{beam.width}{The number of top-performing subsets retained at each expansion stage during heuristic optimisation. Lower values increase speed; higher values avoid discarding of complex synergistic item sets (default: 2000).}
 
-\item{ceiling}{Numeric. The number of combinations above which the \code{optimise}
-prompt or process is triggered. Defaults to 1,000,000.}
+\item{opt.n}{The maximum number of cases (rows) to subsample during the heuristic beam search. Accelerates computation on large datasets without sacrificing optimization accuracy (default: 5000).}
 
-\item{scale.vars}{Logical. If \code{TRUE}, all columns are mean-centered and scaled before 
-analysis. Defaults to \code{FALSE}.}
+\item{ceiling}{Combination threshold triggering optimization (default: 10,000,000)}
 
-\item{na.rm}{Logical. If \code{TRUE}, missing values are handled by pairwise deletion
-in correlations and row-wise removal in mean calculations. Defaults to \code{TRUE}.hich the `optimise`
-prompt or process is triggered. Defaults to 100,000.}
+\item{scale.vars}{If TRUE, mean-centers and scales all columns (default: FALSE)}
+
+\item{na.rm}{If TRUE, handles missing values via pairwise deletion (default: TRUE)}
+
+\item{method}{Metric for ranking combinations (default: NULL for auto-selection):
+\itemize{
+  \item "r": Pearson correlation of sum score with target
+  \item "youden_j": Youden's Index (Sensitivity + Specificity - 1) (Binary targets)
+  \item "binarised_r": Correlation of binarised sum score with target (Binary targets)
+}}
 }
 \value{
-A list object of class \code{reduced_scale} containing:
-  \itemize{
-    \item \code{output}: A data.frame listing the top \code{n.sets} and their correlations.
-    \item \code{best_indices} / \code{best_names}: The identifiers for the top-ranked set.
-    \item \code{scores}: The calculated scores for the selected set (if \code{generate = TRUE}).
+A list of class \code{reduced_scale} containing:
+  \describe{
+    \item{output}{Data frame of the top \code{n.sets} combinations and their performance metrics.}
+    \item{leaderboard}{Extended data frame of the top 100 combinations.}
+    \item{best_names}{Character vector of item names in the top-ranked set.}
+    \item{best_indices}{Integer vector of column indices in the top-ranked set.}
+    \item{scores}{(If \code{generate = TRUE}) A data frame containing the sum scores (and binary classifications if applicable) for the top set.}
+    \item{binary_info}{(If binary target) A list containing optimal cutoffs, classification metrics (Youden's J, Sensitivity, Specificity), and training vs. holdout comparisons.}
+    \item{params}{List of parameters used in the function call.}
   }
 }
 \description{
-This function systematically evaluates subsets of items from a larger scale
-to find the combination that correlates most highly with a target criterion.
-It includes optimisations for handling very large numbers of item combinations,
-such as iterative item reduction (optimisation) and memory-efficient batch processing.
+Systematically evaluates all possible subsets of items from a larger scale to find the combination that maximizes either internal consistency or correlation with an external criterion.
 
-The function can optimise for either:
+Runs on a parallelised C++ backend with memory-optimised data structures (8-bit compression) to evaluate millions of combinations in seconds.
+
+\strong{Key Features:}
 \itemize{
-  \item \strong{Scale Preservation:} (Default) Maximizing the correlation between the short form 
-  and the total score of the parent scale.
-  \item \strong{Criterion Validity:} Maximizing the prediction of an external variable (e.g., 
-  behaviour, a clinical diagnosis, or a future outcome).
+  \item \strong{Combinatorial Search}: Exhaustively scores item subsets to guarantee finding the best-performing item set within the search space.
+  \item \strong{Heuristic Optimisation}: When the number of combinations exceeds the computational ceiling, the function automatically reduces the item pool through a beam search before searching.
+  \item \strong{Cross-Validation}: Supports a Train/Holdout split (default 75/25) to validate findings and prevent overfitting. Reports performance metrics for both the training and holdout samples side-by-side.
+  \item \strong{Binary Classifications}: For binary targets (0/1), automatically finds the optimal integer cut-off score to maximize classification accuracy (Youden's J) or binarised correlation.
 }
 }
 \examples{
-\dontrun{
-library(MASS) 
-# Note: The 'psych' package is required for pca() if using optimisation.
-library(psych)
+\donttest{
+# 1. Create a simple simulated dataset (200 cases, 10 items)
+set.seed(123)
+data <- as.data.frame(matrix(rnorm(200 * 10), ncol = 10))
+colnames(data) <- paste0("Item_", 1:10)
 
-# 1. Create simulated data
-set.seed(42)
-loadings <- c(rnorm(10,0.75,0.08)*sign(rnorm(10)))
-target_cor_matrix <- outer(loadings, loadings)
-diag(target_cor_matrix) <- 1
-simulated_data <- MASS::mvrnorm(n = 200, mu = rep(0, 10), 
-                                Sigma = target_cor_matrix, empirical = TRUE)
-simulated_data <- as.data.frame(simulated_data)
-colnames(simulated_data) <- paste0("item_", 1:10)
+# 2. Internal Consistency Optimization
+# Reduce to 5 items that best maintain the full scale's ranking
+results_scale <- reduceTo(data, n.items = 5)
+print(results_scale)
 
-# 2. Reduce the scale to 3 items (Internal Consistency)
-reduceTo(simulated_data, 3)
+# 3. Criterion Validity Optimization (Binary Target)
+# Create a binary target (e.g., Clinical Diagnosis vs Control)
+target <- ifelse(rowMeans(data) > 0, 1, 0)
 
-# 3. Reduce with external target and cross-validation
-# (Simulating a binary target)
-bin_target <- ifelse(rowMeans(simulated_data) > 0, 1, 0)
-reduceTo(simulated_data, 3, targ = bin_target, cross.validate = TRUE)
+# Find the best 3 items to predict this target, using Cross-Validation
+results_binary <- reduceTo(data, n.items = 3, target = target, cross.validate = TRUE)
+print(results_binary)
 }
-
 }
 \author{
-Paddy Maher, Goldsmiths, University of London. Contact: paddycarstenmaher@gmail.com
+Paddy Maher, Goldsmiths, University of London
 }
