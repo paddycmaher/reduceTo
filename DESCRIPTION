@@ -1,14 +1,17 @@
 Package: reduceTo
-Type: Package
-Version: 1.1.0
-Title: Optimal Short-Form Scale Construction
-Description: Find optimal item subsets through combinatorial search.
-Authors@R: person("Paddy", "Maher", email = "paddycarstenmaher@gmail.com",role = c("aut","cre"))
-License: MIT + file LICENSE
+Title: What the Package Does (One Line, Title Case)
+Version: 0.0.0.9000
+Authors@R: 
+    person("First", "Last", , "first.last@example.com", role = c("aut", "cre"))
+Description: What the package does (one paragraph).
+License: `use_mit_license()`, `use_gpl3_license()` or friends to pick a
+    license
 Encoding: UTF-8
-LazyData: true
-Depends: R (>= 4.0.0)
-Imports: Rcpp,RcppParallel
-LinkingTo: Rcpp,RcppParallel
-SystemRequirements: C++11
+Roxygen: list(markdown = TRUE)
 RoxygenNote: 8.0.0
+Imports:
+    Rcpp,
+    RcppParallel
+LinkingTo:
+    Rcpp,
+    RcppParallel
