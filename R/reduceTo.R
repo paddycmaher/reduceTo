@@ -48,21 +48,23 @@
 #' @param scale.vars If TRUE, mean-centers and scales all columns (default: FALSE)
 #' @param na.rm If TRUE, handles missing values via pairwise deletion (default: TRUE).
 #'   Governs the *reported* scoring/statistics in both \code{speed} modes; it does not
-#'   affect how \code{speed = "fast"} searches, since the imputed search data has no
-#'   missingness left to prorate around
+#'   affect how \code{speed = "fast"} searches, since its search-only copy of the data
+#'   (mean-imputed where values are missing, unchanged otherwise) never has missingness
+#'   left to prorate around
 #' @param method Metric for ranking combinations (default: NULL for auto-selection):
 #'   "r" for Pearson correlation, "youden_j" for Youden's Index, or "binarised_r"
 #'   for correlation of binarised sum score (binary targets)
-#' @param speed Controls how the exhaustive search handles missing data:
-#'   \code{"fast"} (default) mean-imputes a search-only copy of the data and scores
-#'   combinations from precomputed column moments (a Gram matrix), which is dramatically
-#'   faster for large search spaces; \code{"conservative"} uses the original per-combination
-#'   pairwise-deletion scoring throughout, with no imputation. \code{"fast"} only changes
-#'   behaviour when the data actually has missing values -- with complete data the two
-#'   modes are identical. Under \code{"fast"}, imputation is used only to accelerate the
-#'   search: every statistic in the returned leaderboard (r, and for binary targets the
-#'   cutoff/Youden's J/binarised r) is recomputed from the true, non-imputed data before
-#'   being reported, so results are never based on imputed values -- only the search is faster
+#' @param speed Controls the algorithm used for the exhaustive search:
+#'   \code{"fast"} (default) scores combinations from precomputed column moments (a
+#'   Gram matrix), which is dramatically faster for large search spaces; if the data has
+#'   missing values, they're mean-imputed in a search-only copy first (the Gram
+#'   decomposition needs complete data), otherwise the Gram matrix is built directly from
+#'   the true data with no approximation either way. \code{"conservative"} uses the
+#'   original per-combination pairwise-deletion scoring throughout, with no imputation and
+#'   no Gram matrix, at the same result but reduced speed. Regardless of mode, every
+#'   statistic in the returned leaderboard (r, and for binary targets the cutoff/Youden's
+#'   J/binarised r) is always recomputed from the true, non-imputed data before being
+#'   reported, so results are never based on imputed values -- only the search is faster
 #'
 #' @return A list of class \code{reduced_scale} containing:
 #' \describe{
@@ -355,13 +357,17 @@ reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALS
                                               optimize_for, show.progress, keep_top,
                                               speed) {
 
-    used_fast_path <- identical(speed, "fast") && anyNA(data)
+    used_fast_path <- identical(speed, "fast")
 
     if (used_fast_path) {
-      # --- Fast path: score via precomputed column moments (Gram matrix) on
-      # a mean-imputed, search-only copy of the data. Imputation only
-      # accelerates *search*; every statistic in the returned leaderboard is
-      # refined below from the true, non-imputed data before being reported. ---
+      # --- Fast path: score via precomputed column moments (Gram matrix).
+      # When data has missing values, they're mean-imputed in a search-only
+      # copy first; imputation only accelerates *search* -- every statistic
+      # in the returned leaderboard is refined below from the true,
+      # non-imputed data before being reported. When data is already
+      # complete, this imputation step is a no-op (nothing to fill in) and
+      # the Gram matrix is built directly from the true data, so this path
+      # is exact -- not an approximation -- regardless of missingness. ---
       col_means <- colMeans(data, na.rm = TRUE)
       search_data <- data
       na_mask <- is.na(search_data)
@@ -462,7 +468,8 @@ reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALS
 
     cpp_results <- list(leaderboard = leaderboard,
                         timings_cpp = cpp_result$timings_cpp,
-                        used_fast_path = used_fast_path)
+                        used_fast_path = used_fast_path,
+                        imputed_for_search = used_fast_path && anyNA(data))
 
     return(cpp_results)
   }
@@ -948,7 +955,7 @@ reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALS
                                                  optimize_for, show.progress, leaderboard_length,
                                                  speed)
 
-  if (isTRUE(cpp_results$used_fast_path)) {
+  if (isTRUE(cpp_results$imputed_for_search)) {
     message("=~ Fast path: missing data detected, searched using mean-imputed values (all reported statistics are recomputed from the true data). Use speed = 'conservative' to disable.")
   }
 

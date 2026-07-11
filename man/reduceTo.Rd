@@ -76,23 +76,25 @@ beam search (default: 5000)}
 
 \item{na.rm}{If TRUE, handles missing values via pairwise deletion (default: TRUE).
 Governs the \emph{reported} scoring/statistics in both \code{speed} modes; it does not
-affect how \code{speed = "fast"} searches, since the imputed search data has no
-missingness left to prorate around}
+affect how \code{speed = "fast"} searches, since its search-only copy of the data
+(mean-imputed where values are missing, unchanged otherwise) never has missingness
+left to prorate around}
 
 \item{method}{Metric for ranking combinations (default: NULL for auto-selection):
 "r" for Pearson correlation, "youden_j" for Youden's Index, or "binarised_r"
 for correlation of binarised sum score (binary targets)}
 
-\item{speed}{Controls how the exhaustive search handles missing data:
-\code{"fast"} (default) mean-imputes a search-only copy of the data and scores
-combinations from precomputed column moments (a Gram matrix), which is dramatically
-faster for large search spaces; \code{"conservative"} uses the original per-combination
-pairwise-deletion scoring throughout, with no imputation. \code{"fast"} only changes
-behaviour when the data actually has missing values -- with complete data the two
-modes are identical. Under \code{"fast"}, imputation is used only to accelerate the
-search: every statistic in the returned leaderboard (r, and for binary targets the
-cutoff/Youden's J/binarised r) is recomputed from the true, non-imputed data before
-being reported, so results are never based on imputed values -- only the search is faster}
+\item{speed}{Controls the algorithm used for the exhaustive search:
+\code{"fast"} (default) scores combinations from precomputed column moments (a
+Gram matrix), which is dramatically faster for large search spaces; if the data has
+missing values, they're mean-imputed in a search-only copy first (the Gram
+decomposition needs complete data), otherwise the Gram matrix is built directly from
+the true data with no approximation either way. \code{"conservative"} uses the
+original per-combination pairwise-deletion scoring throughout, with no imputation and
+no Gram matrix, at the same result but reduced speed. Regardless of mode, every
+statistic in the returned leaderboard (r, and for binary targets the cutoff/Youden's
+J/binarised r) is always recomputed from the true, non-imputed data before being
+reported, so results are never based on imputed values -- only the search is faster}
 }
 \value{
 A list of class \code{reduced_scale} containing:
