@@ -98,7 +98,7 @@ being reported, so results are never based on imputed values -- only the search 
 A list of class \code{reduced_scale} containing:
 \describe{
 \item{output}{Data frame of the top n.sets combinations and their performance metrics}
-\item{leaderboard}{Extended data frame of the top 100 combinations}
+\item{leaderboard}{Extended data frame of the top combinations (100, or 1000 when ranking by Youden's J)}
 \item{best_names}{Character vector of item names in the top-ranked set}
 \item{best_indices}{Integer vector of column indices in the top-ranked set}
 \item{scores}{(If generate = TRUE) A data frame containing the sum scores}

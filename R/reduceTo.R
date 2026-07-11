@@ -67,7 +67,7 @@
 #' @return A list of class \code{reduced_scale} containing:
 #' \describe{
 #'   \item{output}{Data frame of the top n.sets combinations and their performance metrics}
-#'   \item{leaderboard}{Extended data frame of the top 100 combinations}
+#'   \item{leaderboard}{Extended data frame of the top combinations (100, or 1000 when ranking by Youden's J)}
 #'   \item{best_names}{Character vector of item names in the top-ranked set}
 #'   \item{best_indices}{Integer vector of column indices in the top-ranked set}
 #'   \item{scores}{(If generate = TRUE) A data frame containing the sum scores}
@@ -644,8 +644,6 @@ reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALS
     checkpoints[[label]] <<- Sys.time()
   }
 
-  leaderboard_length <- 100
-  
   # Convert tibbles to standard data frames
   if (inherits(data, "tbl_df") || inherits(data, "tbl")) {
     data <- as.data.frame(data)
@@ -726,7 +724,16 @@ reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALS
       message("Note: 'method' parameter ignored for non-binary targets")
     }
   }
-  
+
+  # Ranking by Youden's J is especially prone to discarding good candidates
+  # during the r-based search/pruning stages (item flipping, prefiltering,
+  # and the exhaustive/beam search itself all rank on point-biserial r, not
+  # J -- a combination with weak r but strong classification performance at
+  # its optimal cutoff can otherwise never reach the leaderboard). Keeping a
+  # wider leaderboard before the true-data refinement step gives J a wider
+  # net to recover from, at a bounded, still-cheap cost.
+  leaderboard_length <- if (identical(ranking_metric, "youden_j")) 1000 else 100
+
   mark_time("target_resolution")
   
   # Ensure column names exist and save them
