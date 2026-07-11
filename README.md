@@ -1,8 +1,8 @@
 # reduceTo: High-Performance Combinatorial Scale Optimisation
 
-**Find the optimal subset of items from larger scales through parallelised exhaustive search with intelligent beam-search optimisation.**
+**Find the optimal subset of items from larger scales through a Gram-matrix-accelerated exhaustive search, with heuristic beam-search narrowing for very large item pools.**
 
-An R package for psychometric scale reduction that guarantees finding the best-performing item combinations, with a memory-optimised C++ backend.
+An R package for psychometric scale reduction that finds the best-performing item combinations within its search space, with a memory-optimised C++ backend.
 
 ------------------------------------------------------------------------
 
@@ -12,8 +12,9 @@ An R package for psychometric scale reduction that guarantees finding the best-p
 
 ### Key Features
 
--   **Guarantees Optimality**: Exhaustive search within feasible space (no heuristic approximations)
--   **Blazing Fast**: Parallelised C++ backend with 8-bit compression processes 1M+ combinations/second
+-   **Exhaustive Search**: Scores every combination in the search space; for pools too large to enumerate directly, a beam search first narrows the pool (see "Intelligent Scaling" below) -- this is a heuristic step, not a guarantee of global optimality, but one that's been validated to find equal or near-equal solutions in practice
+-   **Gram-Matrix Acceleration**: By default, scores combinations from precomputed column moments (a Gram matrix) instead of rescanning raw rows per combination -- up to ~1,800x faster than a row-scan on large samples (see Benchmarks)
+-   **Blazing Fast**: Parallelised C++ backend; the Gram-matrix engine can exceed 100M+ combinations/second, with an 8-bit-compressed row-scan engine available as a fallback (`speed = "conservative"`)
 -   **Intelligent Scaling**: Automatic hybrid beam search for large item pools (100+ items)
 -   **Production-Ready**: Built-in cross-validation, progress tracking, robust error handling
 
@@ -218,6 +219,20 @@ result <- reduceTo(
 ```
 
 ## Performance Benchmarks
+
+### Gram-Matrix Engine vs. Row-Scan (isolated scoring speed)
+
+Measured on the full real IPIP-NEO dataset (300 items, N = 307,313 participants), scoring all C(300, 3) = 4,455,100 combinations directly against a continuous target -- the same precomputed input fed to each engine, isolating the scoring step itself from beam search or other R-side overhead:
+
+| Engine                                                          | Combinations/sec | Time for 4.45M combinations |
+|-------------------------------------------------------------------|-------------------|-------------------------------|
+| Archived pre-Gram version (May 2026), row-scan                  | ~8,850/s          | ~8.4 min                     |
+| Current, `speed = "conservative"` (same row-scan algorithm)     | ~9,190/s          | ~8.1 min                     |
+| Current, `speed = "fast"` (Gram matrix)                         | 100M+/s           | ~0.28s (incl. one-time Gram precompute) |
+
+**~1,800x faster** than the archived row-scan engine for this case. The row-scan engine itself is unchanged between versions (confirmed by the matching row-scan throughput above) -- the entire speedup comes from the Gram-matrix shortcut. This is close to the ceiling case for the Gram trick (small `n.items`, large N, since row-scan cost scales with N per combination while the Gram engine's is O(n.items^2) regardless of N); real end-to-end runs below see smaller, but still large, gains once beam search and R-side overhead are included.
+
+### End-to-End (beam search + exhaustive search)
 
 Measured on real data: the IPIP-NEO Neuroticism scale (60 items, N = 5,000 participants sampled from the full dataset). Small cases run directly; large cases use `reduceTo()`'s own on-machine calibrated estimate, since actually running them without optimisation would take hours to days:
 
