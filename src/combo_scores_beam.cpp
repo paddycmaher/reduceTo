@@ -697,12 +697,103 @@ NumericVector evaluate_beam_cpp(
     BeamWorker<false> worker(data_ptr, combinations, target, results);
     parallelFor(0, n_combos, worker);
   }
-  
+
   // Convert back to Rcpp format
   NumericVector out(n_combos);
   for(int i = 0; i < n_combos; ++i) {
     out[i] = results[i];
   }
-  
+
+  return out;
+}
+
+// ============================================================================
+//  BEAM SEARCH, GRAM-MATRIX VARIANT (Evaluates specific sets provided by R,
+//  scored via precomputed column moments instead of re-reading raw rows)
+// ============================================================================
+// Same relationship to evaluate_beam_cpp as GramComboWorker has to
+// ComboWorker: the combination list is explicit (driven by R's beam
+// expansion loop, not enumerated internally), but each combination's score
+// comes from O(k^2) Gram lookups instead of an O(n_rows * k) row scan. Only
+// valid when gram/col_sums/col_target_dots were built from complete
+// (imputed, if necessary) data -- same contract as process_all_combinations_cpp_gram.
+// `combinations` holds 1-based column indices directly into the pool the
+// Gram matrix was built over (matching evaluate_beam_cpp's convention).
+
+struct BeamGramWorker : public Worker {
+  const RMatrix<double> gram;
+  const RVector<double> col_sums;
+  const RVector<double> col_target_dots;
+  const double sum_target;
+  const double sum_target_sq;
+  const double n_valid;
+  const RMatrix<int> combinations;
+  const int k_items;
+
+  std::vector<double>& results;
+
+  BeamGramWorker(const NumericMatrix& gram,
+                 const NumericVector& col_sums,
+                 const NumericVector& col_target_dots,
+                 double sum_target,
+                 double sum_target_sq,
+                 double n_valid,
+                 const IntegerMatrix& combos,
+                 std::vector<double>& results)
+    : gram(gram), col_sums(col_sums), col_target_dots(col_target_dots),
+      sum_target(sum_target), sum_target_sq(sum_target_sq), n_valid(n_valid),
+      combinations(combos), k_items(combos.ncol()), results(results) {}
+
+  void operator()(std::size_t begin, std::size_t end) {
+    std::vector<int> combo(k_items);
+
+    for (std::size_t row = begin; row < end; ++row) {
+      // NOTE: R passes 1-based indices, matching evaluate_beam_cpp's convention.
+      for (int i = 0; i < k_items; ++i) combo[i] = combinations(row, i) - 1;
+
+      double sum_scores = 0.0, sum_scores_sq = 0.0, sum_prod = 0.0;
+
+      for (int i = 0; i < k_items; ++i) {
+        int ci = combo[i];
+        sum_scores += col_sums[ci];
+        sum_prod += col_target_dots[ci];
+        for (int j = 0; j < k_items; ++j) {
+          sum_scores_sq += gram(ci, combo[j]);
+        }
+      }
+
+      double r = NA_REAL;
+      if (n_valid > 1) {
+        double ms = sum_scores / n_valid;
+        double mt = sum_target / n_valid;
+        double vs = (sum_scores_sq / n_valid) - ms * ms;
+        double vt = (sum_target_sq / n_valid) - mt * mt;
+        double cv = (sum_prod / n_valid) - ms * mt;
+        if (vs > 0 && vt > 0) r = cv / std::sqrt(vs * vt);
+      }
+      results[row] = r;
+    }
+  }
+};
+
+// [[Rcpp::export]]
+NumericVector evaluate_beam_cpp_gram(
+    NumericMatrix gram,
+    NumericVector col_sums,
+    NumericVector col_target_dots,
+    double sum_target,
+    double sum_target_sq,
+    double n_valid,
+    IntegerMatrix combinations
+) {
+  int n_combos = combinations.nrow();
+  std::vector<double> results(n_combos);
+
+  BeamGramWorker worker(gram, col_sums, col_target_dots, sum_target, sum_target_sq,
+                        n_valid, combinations, results);
+  parallelFor(0, n_combos, worker);
+
+  NumericVector out(n_combos);
+  for (int i = 0; i < n_combos; ++i) out[i] = results[i];
   return out;
 }

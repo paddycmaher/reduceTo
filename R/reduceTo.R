@@ -54,17 +54,18 @@
 #' @param method Metric for ranking combinations (default: NULL for auto-selection):
 #'   "r" for Pearson correlation, "youden_j" for Youden's Index, or "binarised_r"
 #'   for correlation of binarised sum score (binary targets)
-#' @param speed Controls the algorithm used for the exhaustive search:
-#'   \code{"fast"} (default) scores combinations from precomputed column moments (a
-#'   Gram matrix), which is dramatically faster for large search spaces; if the data has
-#'   missing values, they're mean-imputed in a search-only copy first (the Gram
-#'   decomposition needs complete data), otherwise the Gram matrix is built directly from
-#'   the true data with no approximation either way. \code{"conservative"} uses the
-#'   original per-combination pairwise-deletion scoring throughout, with no imputation and
-#'   no Gram matrix, at the same result but reduced speed. Regardless of mode, every
-#'   statistic in the returned leaderboard (r, and for binary targets the cutoff/Youden's
-#'   J/binarised r) is always recomputed from the true, non-imputed data before being
-#'   reported, so results are never based on imputed values -- only the search is faster
+#' @param speed Controls the algorithm used for both the beam search (when triggered)
+#'   and the exhaustive search: \code{"fast"} (default) scores combinations from
+#'   precomputed column moments (a Gram matrix), which is dramatically faster for large
+#'   search spaces; if the data has missing values, they're mean-imputed in a search-only
+#'   copy first (the Gram decomposition needs complete data), otherwise the Gram matrix is
+#'   built directly from the true data with no approximation either way.
+#'   \code{"conservative"} uses the original per-combination pairwise-deletion scoring
+#'   throughout, with no imputation and no Gram matrix, at the same result but reduced
+#'   speed. Regardless of mode, every statistic in the returned leaderboard (r, and for
+#'   binary targets the cutoff/Youden's J/binarised r) is always recomputed from the true,
+#'   non-imputed data before being reported, so results are never based on imputed values
+#'   -- only the search is faster
 #'
 #' @return A list of class \code{reduced_scale} containing:
 #' \describe{
@@ -232,7 +233,34 @@ reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALS
     ))
   }
   
-  perform_optimization <- function(current_cols, data, n.items, ceiling, targ, na.rm, beam_width, opt.n) {
+  # Mean-impute missing values in a search-only copy (a no-op when data is
+  # already complete) and precompute the Gram-matrix moments needed to score
+  # any k-item sum score in O(k^2): pool x pool crossprod, column sums,
+  # column-target dot products, and target moments. Shared by both the
+  # exhaustive stage (process_combinations_in_batches) and the beam search
+  # (perform_optimization) so the same imputation/precompute logic isn't
+  # duplicated between them.
+  build_gram_components <- function(data, targ) {
+    col_means <- colMeans(data, na.rm = TRUE)
+    search_data <- data
+    na_mask <- is.na(search_data)
+    search_data[na_mask] <- rep(col_means, each = nrow(search_data))[na_mask]
+
+    valid_rows <- !is.na(targ)
+    sd_valid <- search_data[valid_rows, , drop = FALSE]
+    targ_valid <- targ[valid_rows]
+
+    list(
+      gram = crossprod(sd_valid),
+      col_sums = colSums(sd_valid),
+      col_target_dots = as.vector(crossprod(sd_valid, targ_valid)),
+      sum_target = sum(targ_valid),
+      sum_target_sq = sum(targ_valid^2),
+      n_valid = length(targ_valid)
+    )
+  }
+
+  perform_optimization <- function(current_cols, data, n.items, ceiling, targ, na.rm, beam_width, opt.n, speed) {
 
     # --- SUBSAMPLING ---
     n_total <- nrow(data)
@@ -243,10 +271,27 @@ reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALS
       targ <- targ[sub_idx]
     }
 
-    # Compress once: the underlying item data doesn't change across beam
-    # iterations below, so pack it a single time instead of re-deriving the
-    # same byte buffer on every evaluate_beam_cpp() call.
-    packed_data <- compress_matrix_cpp(data)
+    used_gram_beam <- identical(speed, "fast")
+
+    if (used_gram_beam) {
+      # Build the Gram matrix once, before the beam loop, over ALL columns
+      # of (the subsampled) data -- not just current_cols -- so that
+      # combn()'s real column indices can index straight into gram/col_sums
+      # exactly as evaluate_beam_cpp() already indexes straight into
+      # packed_data by real column number.
+      gc_components <- build_gram_components(data, targ)
+      gram <- gc_components$gram
+      col_sums <- gc_components$col_sums
+      col_target_dots <- gc_components$col_target_dots
+      sum_target <- gc_components$sum_target
+      sum_target_sq <- gc_components$sum_target_sq
+      n_valid <- gc_components$n_valid
+    } else {
+      # Compress once: the underlying item data doesn't change across beam
+      # iterations below, so pack it a single time instead of re-deriving the
+      # same byte buffer on every evaluate_beam_cpp() call.
+      packed_data <- compress_matrix_cpp(data)
+    }
 
     k <- min(3, n.items)
     pool_indices <- current_cols
@@ -263,7 +308,12 @@ reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALS
       }
 
       # 1. Evaluate current combinations via C++
-      scores <- evaluate_beam_cpp(packed_data, current_combos, targ, na.rm)
+      scores <- if (used_gram_beam) {
+        evaluate_beam_cpp_gram(gram, col_sums, col_target_dots, sum_target,
+                               sum_target_sq, n_valid, current_combos)
+      } else {
+        evaluate_beam_cpp(packed_data, current_combos, targ, na.rm)
+      }
 
       # 2. Rank and slice the top B combinations
       n_to_keep <- min(beam_width, nrow(current_combos))
@@ -368,22 +418,15 @@ reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALS
       # complete, this imputation step is a no-op (nothing to fill in) and
       # the Gram matrix is built directly from the true data, so this path
       # is exact -- not an approximation -- regardless of missingness. ---
-      col_means <- colMeans(data, na.rm = TRUE)
-      search_data <- data
-      na_mask <- is.na(search_data)
-      search_data[na_mask] <- rep(col_means, each = nrow(search_data))[na_mask]
-
-      valid_rows <- !is.na(targ)
-      sd_valid <- search_data[valid_rows, , drop = FALSE]
-      targ_valid <- targ[valid_rows]
+      gc_components <- build_gram_components(data, targ)
 
       cpp_result <- process_all_combinations_cpp_gram(
-        gram = crossprod(sd_valid),
-        col_sums = colSums(sd_valid),
-        col_target_dots = as.vector(crossprod(sd_valid, targ_valid)),
-        sum_target = sum(targ_valid),
-        sum_target_sq = sum(targ_valid^2),
-        n_valid = sum(valid_rows),
+        gram = gc_components$gram,
+        col_sums = gc_components$col_sums,
+        col_target_dots = gc_components$col_target_dots,
+        sum_target = gc_components$sum_target,
+        sum_target_sq = gc_components$sum_target_sq,
+        n_valid = gc_components$n_valid,
         n_items = n.items,
         num_choose_from = num_choose_from,
         original_indices = original_indices,
@@ -947,7 +990,7 @@ reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALS
         beam.width <- max(500, min(2000, ceiling %/% max(length(cols), 1)))
       }
 
-      cols <- perform_optimization(cols, data, n.items, ceiling, target, na.rm, beam.width, opt.n)
+      cols <- perform_optimization(cols, data, n.items, ceiling, target, na.rm, beam.width, opt.n, speed)
 
     } else {
       message(sprintf("=~ Note: %s combinations exceeds ceiling (%s) but optimise = FALSE -- running exhaustive search anyway. This may be slow.",

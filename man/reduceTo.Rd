@@ -84,17 +84,18 @@ left to prorate around}
 "r" for Pearson correlation, "youden_j" for Youden's Index, or "binarised_r"
 for correlation of binarised sum score (binary targets)}
 
-\item{speed}{Controls the algorithm used for the exhaustive search:
-\code{"fast"} (default) scores combinations from precomputed column moments (a
-Gram matrix), which is dramatically faster for large search spaces; if the data has
-missing values, they're mean-imputed in a search-only copy first (the Gram
-decomposition needs complete data), otherwise the Gram matrix is built directly from
-the true data with no approximation either way. \code{"conservative"} uses the
-original per-combination pairwise-deletion scoring throughout, with no imputation and
-no Gram matrix, at the same result but reduced speed. Regardless of mode, every
-statistic in the returned leaderboard (r, and for binary targets the cutoff/Youden's
-J/binarised r) is always recomputed from the true, non-imputed data before being
-reported, so results are never based on imputed values -- only the search is faster}
+\item{speed}{Controls the algorithm used for both the beam search (when triggered)
+and the exhaustive search: \code{"fast"} (default) scores combinations from
+precomputed column moments (a Gram matrix), which is dramatically faster for large
+search spaces; if the data has missing values, they're mean-imputed in a search-only
+copy first (the Gram decomposition needs complete data), otherwise the Gram matrix is
+built directly from the true data with no approximation either way.
+\code{"conservative"} uses the original per-combination pairwise-deletion scoring
+throughout, with no imputation and no Gram matrix, at the same result but reduced
+speed. Regardless of mode, every statistic in the returned leaderboard (r, and for
+binary targets the cutoff/Youden's J/binarised r) is always recomputed from the true,
+non-imputed data before being reported, so results are never based on imputed values
+-- only the search is faster}
 }
 \value{
 A list of class \code{reduced_scale} containing:

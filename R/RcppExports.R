@@ -17,3 +17,7 @@ evaluate_beam_cpp <- function(packed_data, combinations, target, na_rm) {
     .Call(`_reduceTo_evaluate_beam_cpp`, packed_data, combinations, target, na_rm)
 }
 
+evaluate_beam_cpp_gram <- function(gram, col_sums, col_target_dots, sum_target, sum_target_sq, n_valid, combinations) {
+    .Call(`_reduceTo_evaluate_beam_cpp_gram`, gram, col_sums, col_target_dots, sum_target, sum_target_sq, n_valid, combinations)
+}
+
