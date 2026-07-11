@@ -55,6 +55,16 @@ test_that("generate defaults to TRUE and produces $scores", {
   expect_false(is.null(r$scores))
 })
 
+test_that("generate = FALSE does not error and leaves $scores NULL", {
+  set.seed(1)
+  data <- as.data.frame(matrix(rnorm(200 * 8), ncol = 8))
+  colnames(data) <- paste0("Item_", 1:8)
+
+  r <- reduceTo(data, n.items = 3, generate = FALSE, show.progress = FALSE)
+
+  expect_true(is.null(r$scores))
+})
+
 test_that("print.reduced_scale runs without error", {
   set.seed(1)
   data <- as.data.frame(matrix(rnorm(200 * 8), ncol = 8))

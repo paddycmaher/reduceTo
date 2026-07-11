@@ -852,17 +852,57 @@ reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALS
     if (optimise) {
 
       # --- Calibrate a real combos/sec rate on this machine, dataset size,
-      # and na.rm setting, instead of extrapolating from a fixed formula ---
-      # Sampled with replacement (occasional repeated items within a row) --
-      # this is only used to measure throughput, not a real search, so exact
-      # combination validity doesn't matter, and a single vectorized sample()
-      # is dramatically cheaper than 20,000 individual replicate() iterations.
-      calibration_n <- min(20000, num_combinations)
-      calibration_combos <- matrix(sample(cols, calibration_n * n.items, replace = TRUE), ncol = n.items)
-      calibration_packed <- compress_matrix_cpp(data)
-      t_calib <- Sys.time()
-      invisible(evaluate_beam_cpp(calibration_packed, calibration_combos, target, na.rm))
-      combos_per_sec <- calibration_n / max(as.numeric(difftime(Sys.time(), t_calib, units = "secs")), 1e-6)
+      # and na.rm setting, instead of extrapolating from a fixed formula.
+      # Calibrated against whichever engine will actually run the final
+      # search: the Gram engine under speed = "fast" is a fundamentally
+      # different (much faster) cost model than the row-scan engine under
+      # "conservative", so timing the wrong one gives a wildly pessimistic
+      # estimate for "fast" -- this bit us in practice. ---
+      if (identical(speed, "fast")) {
+        # Gram engine: per-combination cost is ~O(n.items^2) regardless of
+        # which specific items, so a small stand-in pool gives a
+        # representative combos/sec without needing a large sample.
+        col_means <- colMeans(data, na.rm = TRUE)
+        calib_data <- data
+        na_mask <- is.na(calib_data)
+        calib_data[na_mask] <- rep(col_means, each = nrow(calib_data))[na_mask]
+        valid_rows <- !is.na(target)
+        targ_valid <- target[valid_rows]
+
+        calib_pool_size <- min(ncol(data), n.items + 10)
+        calib_cols <- calib_data[valid_rows, 1:calib_pool_size, drop = FALSE]
+
+        t_calib <- Sys.time()
+        invisible(process_all_combinations_cpp_gram(
+          gram = crossprod(calib_cols),
+          col_sums = colSums(calib_cols),
+          col_target_dots = as.vector(crossprod(calib_cols, targ_valid)),
+          sum_target = sum(targ_valid),
+          sum_target_sq = sum(targ_valid^2),
+          n_valid = length(targ_valid),
+          n_items = n.items,
+          num_choose_from = calib_pool_size,
+          original_indices = 1:calib_pool_size,
+          keep_top = 1,
+          show_progress = FALSE
+        ))
+        calib_combos <- choose(calib_pool_size, n.items)
+        combos_per_sec <- calib_combos / max(as.numeric(difftime(Sys.time(), t_calib, units = "secs")), 1e-6)
+
+      } else {
+        # Conservative engine: row-scan cost depends on which rows/items are
+        # actually touched, so sample real combinations at real scale.
+        # Sampled with replacement (occasional repeated items within a row)
+        # -- this only measures throughput, not a real search, so exact
+        # combination validity doesn't matter, and a single vectorized
+        # sample() is dramatically cheaper than 20,000 replicate() calls.
+        calibration_n <- min(20000, num_combinations)
+        calibration_combos <- matrix(sample(cols, calibration_n * n.items, replace = TRUE), ncol = n.items)
+        calibration_packed <- compress_matrix_cpp(data)
+        t_calib <- Sys.time()
+        invisible(evaluate_beam_cpp(calibration_packed, calibration_combos, target, na.rm))
+        combos_per_sec <- calibration_n / max(as.numeric(difftime(Sys.time(), t_calib, units = "secs")), 1e-6)
+      }
 
       est_seconds <- num_combinations / combos_per_sec
       opt_est_seconds <- ceiling / combos_per_sec
@@ -895,9 +935,16 @@ reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALS
       }
 
       # --- Adaptive beam width: scale to the (post-prefilter) pool size
-      # and the same ceiling budget the user already set ---
+      # and the same ceiling budget the user already set. Capped at 2000
+      # (the long-standing historical default) rather than higher: now that
+      # the final exhaustive stage is Gram-accelerated (speed = "fast"),
+      # beam search's own row-scan scoring is usually the slower half of
+      # the pipeline, and a wider beam doesn't reliably improve quality
+      # since beam search is a heuristic, not exhaustive, in the first
+      # place -- measured beam.width=500 both faster AND slightly better
+      # than 10000 on one real test case. ---
       if (is.null(beam.width)) {
-        beam.width <- max(500, min(10000, ceiling %/% max(length(cols), 1)))
+        beam.width <- max(500, min(2000, ceiling %/% max(length(cols), 1)))
       }
 
       cols <- perform_optimization(cols, data, n.items, ceiling, target, na.rm, beam.width, opt.n)
@@ -1087,7 +1134,7 @@ reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALS
     best_indices = best_items$best_indices[[item.set]],
     best_item_cors = ind_cors[item.set],
     best_item_keys = ind_keys,
-    scores = as.matrix(computed_scores)[, , drop = F],
+    scores = if (!is.null(computed_scores)) as.matrix(computed_scores)[, , drop = F] else NULL,
     target = target,
     original_names = original_names,
     filtered_names = filtered_names,
