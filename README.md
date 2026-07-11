@@ -251,7 +251,7 @@ Actual times depend on your hardware, sample size, and missingness (see `speed` 
 
 ```         
 Maher, P. (2026). reduceTo: High-Performance Combinatorial Scale Optimisation.
-R package version 1.1.0. https://github.com/paddycmaher/reduceTo
+R package version 1.2.0. https://github.com/paddycmaher/reduceTo
 ```
 
 ------------------------------------------------------------------------
@@ -259,9 +259,9 @@ R package version 1.1.0. https://github.com/paddycmaher/reduceTo
 ## Author
 
 **Paddy Maher**\
-Max Planck Institute for Human Development\
+Max Planck Institute for Human Development, MPRG Biosocial\
 [paddycarstenmaher\@gmail.com](mailto:paddycarstenmaher@gmail.com)
 
 ------------------------------------------------------------------------
 
-**License:** MIT \| **Version:** 1.1.0 \| **Updated:** May 2025
+**License:** MIT \| **Version:** 1.2.0 \| **Updated:** July 2026

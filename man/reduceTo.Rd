@@ -140,5 +140,5 @@ print(results_binary)
 }
 }
 \author{
-Paddy Maher, Max Planck Institute for Human Development
+Paddy Maher, Max Planck Institute for Human Development, MPRG Biosocial
 }

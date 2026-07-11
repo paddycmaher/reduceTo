@@ -75,7 +75,7 @@
 #'   \item{params}{List of parameters used in the function call}
 #' }
 #'
-#' @author Paddy Maher, Max Planck Institute for Human Development
+#' @author Paddy Maher, Max Planck Institute for Human Development, MPRG Biosocial
 #' @export
 #' @useDynLib reduceTo, .registration = TRUE
 #' @importFrom Rcpp sourceCpp
