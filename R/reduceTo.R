@@ -41,10 +41,11 @@
 #'   to disable (default: 5)
 #' @param beam.width The number of top-performing subsets retained at each expansion
 #'   stage during heuristic optimisation. Default \code{NULL} picks a width scaled to
-#'   \code{ceiling} and the (post-prefilter) item pool size; pass a number to override
+#'   the (post-prefilter) item pool size (capped between 500 and 2000, independent of
+#'   \code{ceiling}); pass a number to override
 #' @param opt.n The maximum number of cases (rows) to subsample during the heuristic
 #'   beam search (default: 5000)
-#' @param ceiling Combination threshold triggering optimisation (default: 500,000)
+#' @param ceiling Combination threshold triggering optimisation (default: 100,000,000)
 #' @param scale.vars If TRUE, mean-centers and scales all columns (default: FALSE)
 #' @param na.rm If TRUE, handles missing values via pairwise deletion (default: TRUE).
 #'   Governs the *reported* scoring/statistics in both \code{speed} modes; it does not
@@ -103,7 +104,7 @@
 
 reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALSE, r.sq = FALSE,
                      generate = TRUE, item.set = 1, show.progress = T, cross.validate = 0,
-                     optimise = TRUE, prefilter.ratio = 5, beam.width = NULL, opt.n = 5000, ceiling = 500000,
+                     optimise = TRUE, prefilter.ratio = 5, beam.width = NULL, opt.n = 5000, ceiling = 1e8,
                      scale.vars = FALSE, na.rm = TRUE, method = NULL, speed = c("fast", "conservative")){
 
   speed <- match.arg(speed)
@@ -289,8 +290,15 @@ reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALS
     } else {
       # Compress once: the underlying item data doesn't change across beam
       # iterations below, so pack it a single time instead of re-deriving the
-      # same byte buffer on every evaluate_beam_cpp() call.
-      packed_data <- compress_matrix_cpp(data)
+      # same byte buffer on every evaluate_beam_cpp() call. Must go through
+      # compress_for_cpp() first -- compress_matrix_cpp() is a raw
+      # int-to-byte cast that assumes its input is already scaled into
+      # 0-254 (matching how the exhaustive stage's compressed_data is built
+      # in process_combinations_in_batches()). Calling it directly on raw
+      # item data works by accident for small-integer Likert-style items
+      # (they already fit 0-254) but silently wraps/corrupts continuous or
+      # out-of-range values via uint8_t truncation.
+      packed_data <- compress_matrix_cpp(compress_for_cpp(data))
     }
 
     k <- min(3, n.items)
@@ -941,7 +949,7 @@ reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALS
         # sample() is dramatically cheaper than 20,000 replicate() calls.
         calibration_n <- min(20000, num_combinations)
         calibration_combos <- matrix(sample(cols, calibration_n * n.items, replace = TRUE), ncol = n.items)
-        calibration_packed <- compress_matrix_cpp(data)
+        calibration_packed <- compress_matrix_cpp(compress_for_cpp(data))
         t_calib <- Sys.time()
         invisible(evaluate_beam_cpp(calibration_packed, calibration_combos, target, na.rm))
         combos_per_sec <- calibration_n / max(as.numeric(difftime(Sys.time(), t_calib, units = "secs")), 1e-6)
@@ -977,17 +985,27 @@ reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALS
         }
       }
 
-      # --- Adaptive beam width: scale to the (post-prefilter) pool size
-      # and the same ceiling budget the user already set. Capped at 2000
-      # (the long-standing historical default) rather than higher: now that
-      # the final exhaustive stage is Gram-accelerated (speed = "fast"),
-      # beam search's own row-scan scoring is usually the slower half of
-      # the pipeline, and a wider beam doesn't reliably improve quality
-      # since beam search is a heuristic, not exhaustive, in the first
-      # place -- measured beam.width=500 both faster AND slightly better
-      # than 10000 on one real test case. ---
+      # --- Adaptive beam width: scale to the (post-prefilter) pool size,
+      # capped at 2000 (the long-standing historical default). Deliberately
+      # NOT anchored to `ceiling` anymore: ceiling now governs the final
+      # exhaustive stage's size (raised to 100,000,000 by default), a
+      # completely different budget than what a sane beam width should be,
+      # and coupling the two meant a large ceiling silently forced a huge
+      # (slow, not-reliably-better -- beam search is a heuristic, not
+      # exhaustive) beam width regardless of pool size. BEAM_WIDTH_BUDGET
+      # below is a fixed, empirically-tuned constant instead -- chosen to
+      # exactly reproduce this formula's previous output now that it's
+      # decoupled (ceiling's old default, 500,000, was what this formula
+      # was originally tuned and tested against). Beam search's own
+      # row-scan/Gram scoring cost, and now (per profiling after adding the
+      # Gram beam path) the R-side expansion/dedup cost, both scale with
+      # beam_width * pool_size per iteration -- so anchoring to pool size
+      # keeps that cost roughly bounded regardless of how large `ceiling`
+      # is set. Measured beam.width=500 both faster AND slightly better
+      # than 10000 on one real test case, supporting the low cap. ---
+      BEAM_WIDTH_BUDGET <- 500000
       if (is.null(beam.width)) {
-        beam.width <- max(500, min(2000, ceiling %/% max(length(cols), 1)))
+        beam.width <- max(500, min(2000, BEAM_WIDTH_BUDGET %/% max(length(cols), 1)))
       }
 
       cols <- perform_optimization(cols, data, n.items, ceiling, target, na.rm, beam.width, opt.n, speed)

@@ -19,7 +19,7 @@ reduceTo(
   prefilter.ratio = 5,
   beam.width = NULL,
   opt.n = 5000,
-  ceiling = 5e+05,
+  ceiling = 1e+08,
   scale.vars = FALSE,
   na.rm = TRUE,
   method = NULL,
@@ -65,12 +65,13 @@ to disable (default: 5)}
 
 \item{beam.width}{The number of top-performing subsets retained at each expansion
 stage during heuristic optimisation. Default \code{NULL} picks a width scaled to
-\code{ceiling} and the (post-prefilter) item pool size; pass a number to override}
+the (post-prefilter) item pool size (capped between 500 and 2000, independent of
+\code{ceiling}); pass a number to override}
 
 \item{opt.n}{The maximum number of cases (rows) to subsample during the heuristic
 beam search (default: 5000)}
 
-\item{ceiling}{Combination threshold triggering optimisation (default: 500,000)}
+\item{ceiling}{Combination threshold triggering optimisation (default: 100,000,000)}
 
 \item{scale.vars}{If TRUE, mean-centers and scales all columns (default: FALSE)}
 

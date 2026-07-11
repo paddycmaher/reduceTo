@@ -130,8 +130,8 @@ result <- reduceTo(
 |-------------------|------------------------------------------------------------------------|----------|
 | `optimise`        | Enable beam search for large pools                                   | `TRUE`     |
 | `prefilter.ratio` | Before beam search, drop items whose relevance is more than this many times weaker than the strongest item (set `Inf`/`NULL` to disable) | `5` |
-| `beam.width`      | Top combinations kept per stage; `NULL` scales it to `ceiling` and pool size automatically | `NULL` |
-| `ceiling`         | Combination threshold for optimisation                               | `500,000`  |
+| `beam.width`      | Top combinations kept per stage; `NULL` scales it to pool size automatically (500-2000, independent of `ceiling`) | `NULL` |
+| `ceiling`         | Combination threshold for optimisation                               | `100,000,000`  |
 | `opt.n`           | Max rows for beam search (speeds up large N)                         | `5000`     |
 | `speed`           | `"fast"` mean-imputes missing data to score combinations via a Gram-matrix shortcut (reported statistics are always recomputed from the true data); `"conservative"` uses pairwise deletion throughout with no imputation | `"fast"` |
 
