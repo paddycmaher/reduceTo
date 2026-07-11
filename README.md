@@ -219,17 +219,18 @@ result <- reduceTo(
 
 ## Performance Benchmarks
 
-Measured on N = 5,000 participants (small cases run directly; large cases use `reduceTo()`'s own on-machine calibrated estimate, since running them without optimisation isn't feasible):
+Measured on real data: the IPIP-NEO Neuroticism scale (60 items, N = 5,000 participants sampled from the full dataset). Small cases run directly; large cases use `reduceTo()`'s own on-machine calibrated estimate, since actually running them without optimisation would take hours to days:
 
-| Problem    | Combinations       | Without Optimisation | With Beam Search (default settings) |
-|------------|---------------------|-----------------------|--------------------------------------|
-| C(20, 3)   | 1,140               | 0.0s (measured)       | — (below `ceiling`, runs directly)   |
-| C(30, 5)   | 142,506             | 0.3s (measured)       | — (below `ceiling`, runs directly)   |
-| C(40, 10)  | 847,660,528         | \~40 min -- 3 hrs     | 6.0s                                 |
-| C(100, 10) | 17.3 trillion       | \~1 -- 7 years        | 9.7s                                 |
-| C(200, 10) | 22.5 quadrillion    | \~2,088 -- 10,443 years | 13.1s                              |
+| Selecting  | Combinations         | Without Optimisation   | With Beam Search (default settings) |
+|------------|-----------------------|-------------------------|--------------------------------------|
+| 3 of 60    | 34,220                | 0.0s (below `ceiling`, runs directly) | 0.03s                |
+| 5 of 60    | 5,461,512             | \~11 -- 58 sec          | 1.63s                                |
+| 8 of 60    | 2,558,620,845         | \~1 -- 9 hours          | 5.09s                                |
+| 10 of 60   | 75,394,027,566        | \~2 -- 12 days          | 7.55s                                |
 
-Actual times depend on your hardware, sample size, and missingness (see `speed` above); `reduceTo()` prints a calibrated estimate for your own machine and dataset before falling back to beam search.
+On this same data, `speed = "fast"` (default) vs `speed = "conservative"` for "8 of 60" (2.56 billion combinations before beam-search narrowing, real ~0.4% missingness): **9.7s vs 93.5s -- a 9.6x speedup**, both returning the identical result (r = 0.940).
+
+Actual times depend on your hardware, sample size, and missingness; `reduceTo()` prints a calibrated estimate for your own machine and dataset before falling back to beam search.
 
 ## Methodological Notes
 
