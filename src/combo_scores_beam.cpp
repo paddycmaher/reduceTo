@@ -20,6 +20,12 @@ using namespace RcppParallel;
 #define BAR_EMPTY " "   // Remaining blocks
 #define BAR_END   "{"   // Finish line
 #define NA_BYTE   255  // The 8-bit representation of NA
+// Minimum time between progress-bar redraws. ~30fps is well past the point
+// of looking perceptibly "instant/smooth" to a human eye, but each redraw
+// costs a real, blocking std::flush() -- printing far above this rate (the
+// old code redrew on every batch boundary, easily hundreds of times/sec on
+// fast runs) burns real compute on I/O nobody can actually see.
+#define MIN_UPDATE_INTERVAL_MS 33.0
 
 // Shared 32-bit -> 8-bit packing logic (values already expected to fit 0-254,
 // with 255 / NA_INTEGER treated as the NA sentinel). Used both by the
@@ -255,16 +261,21 @@ List process_all_combinations_cpp_parallel_float(
     if (!show_progress) {
       parallelFor(0, n_combos, worker);
     } else {
-      int batch_size = std::max(1000, n_combos / 500); 
+      int batch_size = std::max(1000, n_combos / 60);  // dispatch granularity -- decoupled from print rate (throttled separately) above
+      double last_print_ms = -MIN_UPDATE_INTERVAL_MS;
       for (int start = 0; start < n_combos; start += batch_size) {
         int end = std::min(start + batch_size, n_combos);
         parallelFor(start, end, worker);
         Rcpp::checkUserInterrupt();
-        
-        // Progress Bar Update
+
+        // Progress Bar Update -- throttled to a real, human-perceptible
+        // refresh rate rather than redrawing on every batch boundary
         auto now = std::chrono::high_resolution_clock::now();
-        double seconds = std::chrono::duration_cast<std::chrono::milliseconds>(now - start_time).count() / 1000.0;
-        if (seconds > 0.05) {
+        double ms_since_start = std::chrono::duration_cast<std::chrono::milliseconds>(now - start_time).count();
+        bool is_last_batch = (end == n_combos);
+        if (ms_since_start - last_print_ms >= MIN_UPDATE_INTERVAL_MS || is_last_batch) {
+          last_print_ms = ms_since_start;
+          double seconds = std::max(ms_since_start, 1.0) / 1000.0;
           double pct = (double)end / n_combos;
           double speed = end / seconds;
           double eta = (n_combos - end) / speed;
@@ -278,24 +289,28 @@ List process_all_combinations_cpp_parallel_float(
         }
       }
     }
-    
+
   } else {
     // Exact same logic, but for the <false> template
     ComboWorker<false> worker(packed_data, target, n_items, num_choose_from, results);
-    
+
     if (!show_progress) {
       parallelFor(0, n_combos, worker);
     } else {
-      int batch_size = std::max(1000, n_combos / 500); 
+      int batch_size = std::max(1000, n_combos / 60);  // dispatch granularity -- decoupled from print rate (throttled separately) above
+      double last_print_ms = -MIN_UPDATE_INTERVAL_MS;
       for (int start = 0; start < n_combos; start += batch_size) {
         int end = std::min(start + batch_size, n_combos);
         parallelFor(start, end, worker);
         Rcpp::checkUserInterrupt();
-        
+
         // Progress Bar Update (Code duplication unavoidable without complex wrapper)
         auto now = std::chrono::high_resolution_clock::now();
-        double seconds = std::chrono::duration_cast<std::chrono::milliseconds>(now - start_time).count() / 1000.0;
-        if (seconds > 0.05) {
+        double ms_since_start = std::chrono::duration_cast<std::chrono::milliseconds>(now - start_time).count();
+        bool is_last_batch = (end == n_combos);
+        if (ms_since_start - last_print_ms >= MIN_UPDATE_INTERVAL_MS || is_last_batch) {
+          last_print_ms = ms_since_start;
+          double seconds = std::max(ms_since_start, 1.0) / 1000.0;
           double pct = (double)end / n_combos;
           double speed = end / seconds;
           double eta = (n_combos - end) / speed;
@@ -467,15 +482,19 @@ List process_all_combinations_cpp_gram(
   if (!show_progress) {
     parallelFor(0, n_combos, worker);
   } else {
-    int batch_size = std::max(1000, n_combos / 500);
+    int batch_size = std::max(1000, n_combos / 60);  // dispatch granularity -- decoupled from print rate (throttled separately) above
+    double last_print_ms = -MIN_UPDATE_INTERVAL_MS;
     for (int start = 0; start < n_combos; start += batch_size) {
       int end = std::min(start + batch_size, n_combos);
       parallelFor(start, end, worker);
       Rcpp::checkUserInterrupt();
 
       auto now = std::chrono::high_resolution_clock::now();
-      double seconds = std::chrono::duration_cast<std::chrono::milliseconds>(now - start_time).count() / 1000.0;
-      if (seconds > 0.05) {
+      double ms_since_start = std::chrono::duration_cast<std::chrono::milliseconds>(now - start_time).count();
+      bool is_last_batch = (end == n_combos);
+      if (ms_since_start - last_print_ms >= MIN_UPDATE_INTERVAL_MS || is_last_batch) {
+        last_print_ms = ms_since_start;
+        double seconds = std::max(ms_since_start, 1.0) / 1000.0;
         double pct = (double)end / n_combos;
         double speed = end / seconds;
         double eta = (n_combos - end) / speed;
