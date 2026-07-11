@@ -98,7 +98,7 @@ result <- reduceTo(
 )
 ```
 
-**Process:** 1. Beam search: builds 3 → 4 → ... → 10 items, keeping top 2000 combinations 2. Item extraction: identifies \~50 most promising items 3. Exhaustive search: guarantees optimum within refined pool
+**Process:** 1. Prefilter: drops items far weaker than the strongest by relevance 2. Beam search: builds 3 → 4 → ... → 10 items, keeping the top combinations at each stage (`beam.width`, auto-scaled by default) 3. Item extraction: identifies the most promising items 4. Exhaustive search: guarantees optimum within refined pool
 
 ### Cross-Validation
 
@@ -126,12 +126,14 @@ result <- reduceTo(
 
 ### Optimisation
 
-| Parameter    | Description                                  | Default      |
-|--------------|----------------------------------------------|--------------|
-| `optimise`   | Enable beam search for large pools           | `TRUE`       |
-| `beam.width` | Top combinations kept per stage              | `2000`       |
-| `ceiling`    | Combination threshold for optimisation       | `10,000,000` |
-| `opt.n`      | Max rows for beam search (speeds up large N) | `5000`       |
+| Parameter         | Description                                                          | Default    |
+|-------------------|------------------------------------------------------------------------|----------|
+| `optimise`        | Enable beam search for large pools                                   | `TRUE`     |
+| `prefilter.ratio` | Before beam search, drop items whose relevance is more than this many times weaker than the strongest item (set `Inf`/`NULL` to disable) | `5` |
+| `beam.width`      | Top combinations kept per stage; `NULL` scales it to `ceiling` and pool size automatically | `NULL` |
+| `ceiling`         | Combination threshold for optimisation                               | `500,000`  |
+| `opt.n`           | Max rows for beam search (speeds up large N)                         | `5000`     |
+| `speed`           | `"fast"` mean-imputes missing data to score combinations via a Gram-matrix shortcut (reported statistics are always recomputed from the true data); `"conservative"` uses pairwise deletion throughout with no imputation | `"fast"` |
 
 ### Output
 
@@ -217,15 +219,17 @@ result <- reduceTo(
 
 ## Performance Benchmarks
 
-Estimated processing times (N = 5,000 participants, 2024 hardware):
+Measured on N = 5,000 participants (small cases run directly; large cases use `reduceTo()`'s own on-machine calibrated estimate, since running them without optimisation isn't feasible):
 
-| Problem    | Combinations  | Without Optimisation | With Beam Search |
-|------------|---------------|----------------------|------------------|
-| C(20, 3)   | 1,140         | 0.3s                 | —                |
-| C(30, 5)   | 99,884,400    | 3 mins               | —                |
-| C(40, 10)  | 847,660,528   | \~30 mins            | 2.5s             |
-| C(100, 10) | 17.3 trillion | \~2 years            | 5.2s             |
-| C(200, 10) | 1.4 × 10^18^  | \~150,000 years      | 22.6s            |
+| Problem    | Combinations       | Without Optimisation | With Beam Search (default settings) |
+|------------|---------------------|-----------------------|--------------------------------------|
+| C(20, 3)   | 1,140               | 0.0s (measured)       | — (below `ceiling`, runs directly)   |
+| C(30, 5)   | 142,506             | 0.3s (measured)       | — (below `ceiling`, runs directly)   |
+| C(40, 10)  | 847,660,528         | \~40 min -- 3 hrs     | 6.0s                                 |
+| C(100, 10) | 17.3 trillion       | \~1 -- 7 years        | 9.7s                                 |
+| C(200, 10) | 22.5 quadrillion    | \~2,088 -- 10,443 years | 13.1s                              |
+
+Actual times depend on your hardware, sample size, and missingness (see `speed` above); `reduceTo()` prints a calibrated estimate for your own machine and dataset before falling back to beam search.
 
 ## Methodological Notes
 

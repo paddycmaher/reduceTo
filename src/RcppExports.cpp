@@ -28,23 +28,57 @@ BEGIN_RCPP
     return rcpp_result_gen;
 END_RCPP
 }
-// evaluate_beam_cpp
-NumericVector evaluate_beam_cpp(IntegerMatrix data, IntegerMatrix combinations, NumericVector target, bool na_rm);
-RcppExport SEXP _reduceTo_evaluate_beam_cpp(SEXP dataSEXP, SEXP combinationsSEXP, SEXP targetSEXP, SEXP na_rmSEXP) {
+// process_all_combinations_cpp_gram
+List process_all_combinations_cpp_gram(NumericMatrix gram, NumericVector col_sums, NumericVector col_target_dots, double sum_target, double sum_target_sq, double n_valid, int n_items, int num_choose_from, IntegerVector original_indices, int keep_top, bool show_progress);
+RcppExport SEXP _reduceTo_process_all_combinations_cpp_gram(SEXP gramSEXP, SEXP col_sumsSEXP, SEXP col_target_dotsSEXP, SEXP sum_targetSEXP, SEXP sum_target_sqSEXP, SEXP n_validSEXP, SEXP n_itemsSEXP, SEXP num_choose_fromSEXP, SEXP original_indicesSEXP, SEXP keep_topSEXP, SEXP show_progressSEXP) {
+BEGIN_RCPP
+    Rcpp::RObject rcpp_result_gen;
+    Rcpp::RNGScope rcpp_rngScope_gen;
+    Rcpp::traits::input_parameter< NumericMatrix >::type gram(gramSEXP);
+    Rcpp::traits::input_parameter< NumericVector >::type col_sums(col_sumsSEXP);
+    Rcpp::traits::input_parameter< NumericVector >::type col_target_dots(col_target_dotsSEXP);
+    Rcpp::traits::input_parameter< double >::type sum_target(sum_targetSEXP);
+    Rcpp::traits::input_parameter< double >::type sum_target_sq(sum_target_sqSEXP);
+    Rcpp::traits::input_parameter< double >::type n_valid(n_validSEXP);
+    Rcpp::traits::input_parameter< int >::type n_items(n_itemsSEXP);
+    Rcpp::traits::input_parameter< int >::type num_choose_from(num_choose_fromSEXP);
+    Rcpp::traits::input_parameter< IntegerVector >::type original_indices(original_indicesSEXP);
+    Rcpp::traits::input_parameter< int >::type keep_top(keep_topSEXP);
+    Rcpp::traits::input_parameter< bool >::type show_progress(show_progressSEXP);
+    rcpp_result_gen = Rcpp::wrap(process_all_combinations_cpp_gram(gram, col_sums, col_target_dots, sum_target, sum_target_sq, n_valid, n_items, num_choose_from, original_indices, keep_top, show_progress));
+    return rcpp_result_gen;
+END_RCPP
+}
+// compress_matrix_cpp
+RawVector compress_matrix_cpp(IntegerMatrix data);
+RcppExport SEXP _reduceTo_compress_matrix_cpp(SEXP dataSEXP) {
 BEGIN_RCPP
     Rcpp::RObject rcpp_result_gen;
     Rcpp::RNGScope rcpp_rngScope_gen;
     Rcpp::traits::input_parameter< IntegerMatrix >::type data(dataSEXP);
+    rcpp_result_gen = Rcpp::wrap(compress_matrix_cpp(data));
+    return rcpp_result_gen;
+END_RCPP
+}
+// evaluate_beam_cpp
+NumericVector evaluate_beam_cpp(RawVector packed_data, IntegerMatrix combinations, NumericVector target, bool na_rm);
+RcppExport SEXP _reduceTo_evaluate_beam_cpp(SEXP packed_dataSEXP, SEXP combinationsSEXP, SEXP targetSEXP, SEXP na_rmSEXP) {
+BEGIN_RCPP
+    Rcpp::RObject rcpp_result_gen;
+    Rcpp::RNGScope rcpp_rngScope_gen;
+    Rcpp::traits::input_parameter< RawVector >::type packed_data(packed_dataSEXP);
     Rcpp::traits::input_parameter< IntegerMatrix >::type combinations(combinationsSEXP);
     Rcpp::traits::input_parameter< NumericVector >::type target(targetSEXP);
     Rcpp::traits::input_parameter< bool >::type na_rm(na_rmSEXP);
-    rcpp_result_gen = Rcpp::wrap(evaluate_beam_cpp(data, combinations, target, na_rm));
+    rcpp_result_gen = Rcpp::wrap(evaluate_beam_cpp(packed_data, combinations, target, na_rm));
     return rcpp_result_gen;
 END_RCPP
 }
 
 static const R_CallMethodDef CallEntries[] = {
     {"_reduceTo_process_all_combinations_cpp_parallel_float", (DL_FUNC) &_reduceTo_process_all_combinations_cpp_parallel_float, 8},
+    {"_reduceTo_process_all_combinations_cpp_gram", (DL_FUNC) &_reduceTo_process_all_combinations_cpp_gram, 11},
+    {"_reduceTo_compress_matrix_cpp", (DL_FUNC) &_reduceTo_compress_matrix_cpp, 1},
     {"_reduceTo_evaluate_beam_cpp", (DL_FUNC) &_reduceTo_evaluate_beam_cpp, 4},
     {NULL, NULL, 0}
 };

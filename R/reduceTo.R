@@ -23,24 +23,46 @@
 #' @param n.sets Number of top-performing item sets to return (default: 5)
 #' @param item.names If TRUE, output lists item names instead of column numbers (default: FALSE)
 #' @param r.sq If TRUE, returns R² alongside correlation (default: FALSE)
-#' @param generate If TRUE, returns computed scores for selected item set (default: FALSE)
+#' @param generate If TRUE, returns computed scores for selected item set (default: TRUE)
 #' @param item.set Which ranked set to generate scores for, used with generate = TRUE (default: 1)
 #' @param show.progress If TRUE, displays progress bar during computation (default: TRUE)
-#' @param cross.validate Numeric input controlling a data split into Training/Holdout 
-#'   sets; if TRUE or 1, uses a 75\%/25\% split (default: FALSE)
-#' @param optimise Controls heuristic pruning for large item pools: TRUE (default) 
-#'   automatically optimises if combinations exceed ceiling; FALSE forces exhaustive 
+#' @param cross.validate Numeric input controlling a data split into Training/Holdout
+#'   sets; if TRUE or 1, uses a 75%/25% split (default: FALSE)
+#' @param optimise Controls heuristic pruning for large item pools: TRUE (default)
+#'   automatically optimises if combinations exceed ceiling; FALSE forces exhaustive
 #'   search (can be slow)
-#' @param beam.width The number of top-performing subsets retained at each expansion 
-#'   stage during heuristic optimisation (default: 2000)
-#' @param opt.n The maximum number of cases (rows) to subsample during the heuristic 
+#' @param prefilter.ratio Before optimisation runs, items whose relevance (|correlation|
+#'   with the target, or item-total centrality when no target is supplied) is more than
+#'   \code{prefilter.ratio} times weaker than the strongest item are dropped from the pool,
+#'   which narrows what the beam search has to enumerate. Uses a *relative* threshold so
+#'   it stays sensible when every item is weakly correlated (e.g. predicting a low-signal
+#'   external criterion) -- items are compared to each other, not to an absolute cutoff.
+#'   Never prunes below \code{n.items} remaining columns. Set to \code{Inf} or \code{NULL}
+#'   to disable (default: 5)
+#' @param beam.width The number of top-performing subsets retained at each expansion
+#'   stage during heuristic optimisation. Default \code{NULL} picks a width scaled to
+#'   \code{ceiling} and the (post-prefilter) item pool size; pass a number to override
+#' @param opt.n The maximum number of cases (rows) to subsample during the heuristic
 #'   beam search (default: 5000)
 #' @param ceiling Combination threshold triggering optimisation (default: 500,000)
 #' @param scale.vars If TRUE, mean-centers and scales all columns (default: FALSE)
-#' @param na.rm If TRUE, handles missing values via pairwise deletion (default: TRUE)
-#' @param method Metric for ranking combinations (default: NULL for auto-selection): 
-#'   "r" for Pearson correlation, "youden_j" for Youden's Index, or "binarised_r" 
+#' @param na.rm If TRUE, handles missing values via pairwise deletion (default: TRUE).
+#'   Governs the *reported* scoring/statistics in both \code{speed} modes; it does not
+#'   affect how \code{speed = "fast"} searches, since the imputed search data has no
+#'   missingness left to prorate around
+#' @param method Metric for ranking combinations (default: NULL for auto-selection):
+#'   "r" for Pearson correlation, "youden_j" for Youden's Index, or "binarised_r"
 #'   for correlation of binarised sum score (binary targets)
+#' @param speed Controls how the exhaustive search handles missing data:
+#'   \code{"fast"} (default) mean-imputes a search-only copy of the data and scores
+#'   combinations from precomputed column moments (a Gram matrix), which is dramatically
+#'   faster for large search spaces; \code{"conservative"} uses the original per-combination
+#'   pairwise-deletion scoring throughout, with no imputation. \code{"fast"} only changes
+#'   behaviour when the data actually has missing values -- with complete data the two
+#'   modes are identical. Under \code{"fast"}, imputation is used only to accelerate the
+#'   search: every statistic in the returned leaderboard (r, and for binary targets the
+#'   cutoff/Youden's J/binarised r) is recomputed from the true, non-imputed data before
+#'   being reported, so results are never based on imputed values -- only the search is faster
 #'
 #' @return A list of class \code{reduced_scale} containing:
 #' \describe{
@@ -55,6 +77,9 @@
 #'
 #' @author Paddy Maher, Max Planck Institute for Human Development
 #' @export
+#' @useDynLib reduceTo, .registration = TRUE
+#' @importFrom Rcpp sourceCpp
+#' @import RcppParallel
 #'
 #' @examples
 #' \donttest{
@@ -73,10 +98,12 @@
 #' print(results_binary)
 #' }
 
-reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALSE, r.sq = FALSE, 
-                     generate = TRUE, item.set = 1, show.progress = T, cross.validate = 0, 
-                     optimise = TRUE, beam.width = 2000, opt.n = 5000, ceiling = 500000, 
-                     scale.vars = FALSE, na.rm = TRUE, method = NULL){
+reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALSE, r.sq = FALSE,
+                     generate = TRUE, item.set = 1, show.progress = T, cross.validate = 0,
+                     optimise = TRUE, prefilter.ratio = 5, beam.width = NULL, opt.n = 5000, ceiling = 500000,
+                     scale.vars = FALSE, na.rm = TRUE, method = NULL, speed = c("fast", "conservative")){
+
+  speed <- match.arg(speed)
   
   # ============================================================================
   # HELPER FUNCTIONS
@@ -114,6 +141,12 @@ reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALS
     return(x)
   }
   
+  # Reproducible row subsample (capped at 2000) used for correlation-based item flipping
+  get_cor_subsample <- function(n_rows) {
+    set.seed(1)
+    if (n_rows > 2000) sample(1:n_rows, 2000) else 1:n_rows
+  }
+
   # Find optimal integer cutoff for binary targets
   # Can optimize for either binarised_r or youden_j
   find_optimal_cutoff_binary <- function(scores, binary_target, optimize_for = "youden_j") {
@@ -198,22 +231,27 @@ reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALS
   }
   
   perform_optimization <- function(current_cols, data, n.items, ceiling, targ, na.rm, beam_width, opt.n) {
-    
+
     # --- SUBSAMPLING ---
     n_total <- nrow(data)
     if (n_total > opt.n) {
       set.seed(1)
-      sub_idx <- sample(seq_len(n_total), opt.n) 
+      sub_idx <- sample(seq_len(n_total), opt.n)
       data <- data[sub_idx, , drop = FALSE]
       targ <- targ[sub_idx]
     }
-    
+
+    # Compress once: the underlying item data doesn't change across beam
+    # iterations below, so pack it a single time instead of re-deriving the
+    # same byte buffer on every evaluate_beam_cpp() call.
+    packed_data <- compress_matrix_cpp(data)
+
     k <- min(3, n.items)
     pool_indices <- current_cols
     current_combos <- t(combn(pool_indices, k))
-    
+
     while (k <= n.items) {
-      
+
       if (k %% 2 == 0) {
         cat(sprintf("\r~{ Beam search }~ =~= Evaluating subsets: %d of %d items", k, n.items))
         flush.console()
@@ -221,39 +259,39 @@ reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALS
         cat(sprintf("\r~{ Beam search }~ =+= Evaluating subsets: %d of %d items", k, n.items))
         flush.console()
       }
-      
+
       # 1. Evaluate current combinations via C++
-      scores <- evaluate_beam_cpp(data, current_combos, targ, na.rm)
-      
+      scores <- evaluate_beam_cpp(packed_data, current_combos, targ, na.rm)
+
       # 2. Rank and slice the top B combinations
       n_to_keep <- min(beam_width, nrow(current_combos))
       top_indices <- order(abs(scores), decreasing = TRUE)[1:n_to_keep]
       top_combos <- current_combos[top_indices, , drop = FALSE]
-      
+
       if (k == n.items) break
-      
+
       # 3. Expand the beam
       n_top <- nrow(top_combos)
       n_pool <- length(pool_indices)
-      
+
       expanded <- top_combos[rep(1:n_top, each = n_pool), , drop = FALSE]
       new_items <- rep(pool_indices, times = n_top)
       expanded <- cbind(expanded, new_items)
-      
+
       # 4. Fast duplicate check
       duplicate_mask <- rowSums(expanded[, 1:k, drop = FALSE] == new_items) > 0
       expanded <- expanded[!duplicate_mask, , drop = FALSE]
-      
+
       # 5. Fully vectorized row sort (orders by row index first, then value)
       expanded <- matrix(
-        expanded[order(row(expanded), expanded)], 
-        ncol = ncol(expanded), 
+        expanded[order(row(expanded), expanded)],
+        ncol = ncol(expanded),
         byrow = TRUE
       )
-      
+
       # 6. Keep only unique combination paths
       current_combos <- unique(expanded)
-      
+
       k <- k + 1
     }
     
@@ -289,8 +327,8 @@ reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALS
       max_val <- max(x, na.rm = TRUE)
       range_val <- max_val - min_val
       
-      # Determine if the column is entirely integers
-      is_integer_like <- all(x[!na_mask] %% 1 == 0)
+      # Determine if the column is entirely integers (allow for floating-point noise)
+      is_integer_like <- all(abs(x[!na_mask] - round(x[!na_mask])) < 1e-8)
       
       if (range_val == 0) {
         # Constant column
@@ -312,101 +350,151 @@ reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALS
   
   # Process combinations in batches to manage memory
   process_combinations_in_batches <- function(data, targ, num_choose_from,
-                                              original_indices, na.rm, 
-                                              is_binary, n.items, ranking_metric, 
-                                              optimize_for, show.progress) {
-    
-    compressed_data <- compress_for_cpp(data)
-    
-    # Use C++ to process all combinations and return top 100
-    cpp_result <- process_all_combinations_cpp_parallel_float(
-      data = compressed_data,
-      n_items = n.items,
-      num_choose_from = num_choose_from,
-      na_rm = na.rm,
-      target = targ,
-      original_indices = original_indices,
-      keep_top = leaderboard_length,
-      show_progress = show.progress
-    )
-    
+                                              original_indices, na.rm,
+                                              is_binary, n.items, ranking_metric,
+                                              optimize_for, show.progress, keep_top,
+                                              speed) {
+
+    used_fast_path <- identical(speed, "fast") && anyNA(data)
+
+    if (used_fast_path) {
+      # --- Fast path: score via precomputed column moments (Gram matrix) on
+      # a mean-imputed, search-only copy of the data. Imputation only
+      # accelerates *search*; every statistic in the returned leaderboard is
+      # refined below from the true, non-imputed data before being reported. ---
+      col_means <- colMeans(data, na.rm = TRUE)
+      search_data <- data
+      na_mask <- is.na(search_data)
+      search_data[na_mask] <- rep(col_means, each = nrow(search_data))[na_mask]
+
+      valid_rows <- !is.na(targ)
+      sd_valid <- search_data[valid_rows, , drop = FALSE]
+      targ_valid <- targ[valid_rows]
+
+      cpp_result <- process_all_combinations_cpp_gram(
+        gram = crossprod(sd_valid),
+        col_sums = colSums(sd_valid),
+        col_target_dots = as.vector(crossprod(sd_valid, targ_valid)),
+        sum_target = sum(targ_valid),
+        sum_target_sq = sum(targ_valid^2),
+        n_valid = sum(valid_rows),
+        n_items = n.items,
+        num_choose_from = num_choose_from,
+        original_indices = original_indices,
+        keep_top = keep_top,
+        show_progress = show.progress
+      )
+    } else {
+      compressed_data <- compress_for_cpp(data)
+
+      cpp_result <- process_all_combinations_cpp_parallel_float(
+        data = compressed_data,
+        n_items = n.items,
+        num_choose_from = num_choose_from,
+        na_rm = na.rm,
+        target = targ,
+        original_indices = original_indices,
+        keep_top = keep_top,
+        show_progress = show.progress
+      )
+    }
+
     # Convert to data.frame
     leaderboard <- data.frame(
       combination = cpp_result$combination,
       r = cpp_result$r,
       stringsAsFactors = FALSE
     )
-    
-    # For binary targets, calculate cutoff metrics for top 100
-    if (is_binary) {
-      # Need to recalculate scores for top 100 combinations
+
+    # Refine the top `keep_top` combinations from the ORIGINAL (non-imputed,
+    # non-compressed) data. This always recomputes `r` from true floating-
+    # point values -- both C++ scoring engines work from data that's been
+    # through some form of lossy reduction (8-bit compression for the
+    # exhaustive path, mean-imputation for the fast/Gram path), so without
+    # this step the leaderboard's `r` reflects that engine's approximation
+    # rather than the actual data. Binary targets additionally need their
+    # classification cutoff computed from the true data. Both reuse the same
+    # per-row scores, so they're computed together in one pass. Bounded to
+    # `keep_top` (100) rows regardless of dataset or pool size.
+    {
       top_combos <- strsplit(leaderboard$combination, ',')
-      
-      binarised_r <- numeric(nrow(leaderboard))
-      cutoff <- numeric(nrow(leaderboard))
-      youden_j <- numeric(nrow(leaderboard))
-      
+
+      refined_r <- numeric(nrow(leaderboard))
+      if (is_binary) {
+        binarised_r <- numeric(nrow(leaderboard))
+        cutoff <- numeric(nrow(leaderboard))
+        youden_j <- numeric(nrow(leaderboard))
+      }
+
       for (i in 1:nrow(leaderboard)) {
         # Parse combination indices
         combo_indices <- as.numeric(top_combos[[i]])
         local_cols <- match(combo_indices, original_indices)
-        
-        # Calculate scores for this combination
+
+        # Calculate scores for this combination from the true data
         scores <- rowMeans(data[, local_cols, drop = FALSE], na.rm = na.rm) * n.items
-        
-        # Find optimal cutoff
-        cutoff_info <- find_optimal_cutoff_binary(scores, targ, optimize_for)
-        
-        binarised_r[i] <- cutoff_info$binarised_r
-        cutoff[i] <- cutoff_info$optimal_integer_cutoff
-        youden_j[i] <- cutoff_info$youden_j
+
+        refined_r[i] <- suppressWarnings(cor(scores, targ, use = "pairwise.complete.obs"))
+
+        if (is_binary) {
+          # Find optimal cutoff
+          cutoff_info <- find_optimal_cutoff_binary(scores, targ, optimize_for)
+
+          binarised_r[i] <- cutoff_info$binarised_r
+          cutoff[i] <- cutoff_info$optimal_integer_cutoff
+          youden_j[i] <- cutoff_info$youden_j
+        }
       }
-      
-      # Add binary metrics and rename correlation column
-      leaderboard$`>=` <- cutoff
-      leaderboard$binarised_r <- binarised_r
-      leaderboard$youden_j <- youden_j
-      
-      # Re-rank by the specified ranking metric
-      leaderboard <- leaderboard[order(abs(leaderboard[[ranking_metric]]), 
-                                       decreasing = TRUE), ]
+
+      leaderboard$r <- refined_r
+
+      if (is_binary) {
+        # Add binary metrics and rename correlation column
+        leaderboard$`>=` <- cutoff
+        leaderboard$binarised_r <- binarised_r
+        leaderboard$youden_j <- youden_j
+
+        # Re-rank by the specified ranking metric
+        leaderboard <- leaderboard[order(abs(leaderboard[[ranking_metric]]),
+                                         decreasing = TRUE), ]
+      }
     }
-    
+
     cpp_results <- list(leaderboard = leaderboard,
-                        timings_cpp = cpp_result$timings_cpp)
-    
+                        timings_cpp = cpp_result$timings_cpp,
+                        used_fast_path = used_fast_path)
+
     return(cpp_results)
   }
   
-  # Extract best item identifiers from leaderboard
-  extract_best_items <- function(leaderboard, item.set, data, original_indices) {
-    
-    # Parse all combinations - these are original indices
+  # Parse leaderboard$combination (comma-separated original indices) into
+  # sorted index lists and their positions in the current data, once -- both
+  # extract_best_items() and calculate_item_correlations() need this from
+  # the same unchanged leaderboard, so it's computed a single time and
+  # shared rather than each function re-parsing the same strings.
+  parse_leaderboard_combinations <- function(leaderboard, original_indices) {
     comb_list_unordered <- lapply(strsplit(leaderboard$combination, ','), as.numeric)
-    comb_list <- lapply( comb_list_unordered, sort )
-    
-    # Map to local positions in current data
+    comb_list <- lapply(comb_list_unordered, sort)
     matched_comb_list <- lapply(comb_list, function(x) match(x, original_indices))
-    
-    # convert indices to column names
-    best_names <- lapply(matched_comb_list, function(x) colnames(data)[x])
-    
-    return(list(best_names = best_names, best_indices = comb_list))
+    return(list(comb_list = comb_list, matched_comb_list = matched_comb_list))
   }
-  
+
+  # Extract best item identifiers from leaderboard
+  extract_best_items <- function(data, parsed_combos) {
+
+    # convert indices to column names
+    best_names <- lapply(parsed_combos$matched_comb_list, function(x) colnames(data)[x])
+
+    return(list(best_names = best_names, best_indices = parsed_combos$comb_list))
+  }
+
   # Calculate individual item correlations for all sets in leaderboard
-  calculate_item_correlations <- function(leaderboard, data, original_indices, 
-                                          targ, items_to_flip) {
-    
-    if (nrow(data) > 10000) it.cor.sub <- sample(1:nrow(data), 10000) else it.cor.sub <- 1:nrow(data)
-    
-    # Parse all combinations - these are original indices
-    comb_list_unordered <- lapply(strsplit(leaderboard$combination, ','), as.numeric)
-    comb_list <- lapply( comb_list_unordered, sort )
-    
-    # Map to local positions in current data
-    matched_comb_list <- lapply(comb_list, function(x) match(x, original_indices))
-    
+  calculate_item_correlations <- function(data, targ, items_to_flip, cols_names, parsed_combos) {
+
+    if (nrow(data) > 10000) { set.seed(1); it.cor.sub <- sample(1:nrow(data), 10000) } else it.cor.sub <- 1:nrow(data)
+
+    matched_comb_list <- parsed_combos$matched_comb_list
+
     unflip_indices <- intersect(cols_names, items_to_flip)
     
     flip_items_simple <- function(x, indices){
@@ -476,19 +564,10 @@ reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALS
       }
     }
     
-    # 5. Rename Training Columns
-    #train_cols <- c('r', 'youden_j', 'binarised_r')
-    #existing_train_cols <- intersect(colnames(leaderboard), train_cols)
-    #colnames(leaderboard)[match(existing_train_cols, colnames(leaderboard))] <- paste0(existing_train_cols, '_train')
-    
-    # 6. Calculate Holdout Correlations
+    # 5. Calculate Holdout Correlations
     # We use 'pairwise.complete.obs' to handle any NAs safely
     leaderboard$r_holdout <- as.vector(cor(scores_matrix, target, use = 'pairwise.complete.obs'))
-    
-    #leaderboard <- leaderboard[order(leaderboard$r_train,decreasing = T),]
-    
-    #rownames(leaderboard) <- NULL
-    
+
     if (is_binary) {
       
       # Binarised Correlation
@@ -560,8 +639,11 @@ reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALS
   # MAIN FUNCTION BODY
   # ============================================================================
   
-  t0 <- Sys.time()
-  
+  checkpoints <- list(start = Sys.time())
+  mark_time <- function(label) {
+    checkpoints[[label]] <<- Sys.time()
+  }
+
   leaderboard_length <- 100
   
   # Convert tibbles to standard data frames
@@ -645,7 +727,7 @@ reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALS
     }
   }
   
-  t1 <- Sys.time()
+  mark_time("target_resolution")
   
   # Ensure column names exist and save them
   if (is.null(colnames(data))) {
@@ -666,7 +748,7 @@ reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALS
     stop("Error: Input data contains fewer valid numeric columns than 'n.items'.")
   }
   
-  t2 <- Sys.time()
+  mark_time("column_validation")
   
   # Filter to valid columns
   data <- data[, valid_mask, drop = FALSE]
@@ -674,7 +756,7 @@ reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALS
   original_indices <- all_original_indices[valid_mask]
   filtered_names <- colnames(data)  # Save valid column names
   
-  t3 <- Sys.time()
+  mark_time("column_filtering")
   
   # Convert to matrix for computational efficiency
   if (!is.matrix(data)) data <- as.matrix(data)
@@ -691,44 +773,52 @@ reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALS
     cv_holdout <- setdiff(1:nrow(data), cv_subset)
     }
   
-  t4 <- Sys.time()
+  mark_time("cv_split_setup")
   
   # flip items negatively correlated with most central item
   
   if (!target_supplied) {
-    set.seed(1)
-    if (nrow(data) > 2000) cor_subsample <- sample(1:nrow(data), 2000) else cor_subsample <- 1:nrow(data)
-    
+    cor_subsample <- get_cor_subsample(nrow(data))
+
     dc <- cor(data[cor_subsample,], use = "p")
-    most_central_item <- order(colSums(abs(dc), na.rm = TRUE), decreasing = TRUE)[1]
-    
+    centrality <- colSums(abs(dc), na.rm = TRUE)
+    most_central_item <- order(centrality, decreasing = TRUE)[1]
+
     pivot_item <- colnames(data)[most_central_item]
-    
+
     items_to_flip_TF <- dc[, most_central_item] < 0
     items_to_flip <- filtered_names[items_to_flip_TF]
-    
+
     # Reverse-score items
-    data <- flip_items(data, items_to_flip) 
-    
+    data <- flip_items(data, items_to_flip)
+
     #create target
     target <- rowMeans(data, na.rm = na.rm)
-  } 
-  
+
+    # Item relevance for the pre-optimisation prefilter: total absolute
+    # correlation with the rest of the pool (item-total-style centrality),
+    # reusing the matrix already computed above for pivot selection.
+    relevance <- centrality
+  }
+
   if (target_supplied) {
-    set.seed(1)
-    if (nrow(data) > 2000) cor_subsample <- sample(1:nrow(data), 2000) else cor_subsample <- 1:nrow(data)
-    
+    cor_subsample <- get_cor_subsample(nrow(data))
+
     # For external criteria: flip items negatively correlated with target
     dc <- cor(data[cor_subsample,], target[cor_subsample], use = "p")
     dc[is.na(dc)] <- 0
-    
+
     items_to_flip_TF <- as.vector(dc) < 0
     items_to_flip <- filtered_names[items_to_flip_TF]
     items_to_zero <- (abs(as.vector(dc)) > 0.999999 | abs(as.vector(dc)) < 0.0001)
     data[,items_to_zero] <- 0
-    
-    data <- flip_items(data, items_to_flip)  
+
+    data <- flip_items(data, items_to_flip)
     pivot_item <- NA
+
+    # Item relevance for the pre-optimisation prefilter: |correlation| with
+    # the target, reusing the vector already computed above for flipping.
+    relevance <- abs(as.vector(dc))
   }
   
   if (cross.validate) {
@@ -738,49 +828,83 @@ reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALS
     target <- target[cv_subset]
   }
   
-  t5 <- Sys.time()
+  mark_time("item_flipping")
   
   # Check if optimization is needed
   num_combinations <- choose(ncol(data), n.items)
-  
+
   if (num_combinations > ceiling) {
-    
-    current_year <- as.numeric(format(Sys.Date(), "%Y"))
-    base_year <- 2024
-    base_constant <- 5e-10
-    # Scaling factor: Constant halves every 2 years
-    # Formula: base_constant * (0.5 ^ ((current_year - base_year) / 2))
-    years_passed <- current_year - base_year
-    CPU_constant <- base_constant * (0.5 ^ (years_passed / 2))
-    est_seconds <- num_combinations*nrow(data) * CPU_constant
-    opt_est_seconds <- ceiling*nrow(data) * CPU_constant
-    
-    message(paste0("=~ Optimisation triggered: this dataset would generate ", 
-                   format(num_combinations, big.mark = ",",scientific = FALSE), 
-                   " combinations (~",format_duration(est_seconds), " to ",format_duration(est_seconds*5),
-                   " with N = ",format(nrow(data), big.mark = ",",scientific = FALSE) ,
-                   "). \n=~ Optimisation will be used to reduce combinations to below ", 
-                   format(ceiling, big.mark = ",",scientific = FALSE),
-                   " (~",format_duration(opt_est_seconds), " to ",format_duration(opt_est_seconds*5),
-                   "). \n=~ To change this threshold, use the 'ceiling' argument."))
-    
-    cols <- perform_optimization(cols, data, n.items, ceiling, target, na.rm, beam.width, opt.n)
+
+    if (optimise) {
+
+      # --- Calibrate a real combos/sec rate on this machine, dataset size,
+      # and na.rm setting, instead of extrapolating from a fixed formula ---
+      calibration_n <- min(20000, num_combinations)
+      calibration_combos <- t(replicate(calibration_n, sort(sample(cols, n.items))))
+      calibration_packed <- compress_matrix_cpp(data)
+      t_calib <- Sys.time()
+      invisible(evaluate_beam_cpp(calibration_packed, calibration_combos, target, na.rm))
+      combos_per_sec <- calibration_n / max(as.numeric(difftime(Sys.time(), t_calib, units = "secs")), 1e-6)
+
+      est_seconds <- num_combinations / combos_per_sec
+      opt_est_seconds <- ceiling / combos_per_sec
+
+      message(paste0("=~ Optimisation triggered: this dataset would generate ",
+                     format(num_combinations, big.mark = ",",scientific = FALSE),
+                     " combinations (~",format_duration(est_seconds), " to ",format_duration(est_seconds*5),
+                     " with N = ",format(nrow(data), big.mark = ",",scientific = FALSE) ,
+                     "). \n=~ Optimisation will be used to reduce combinations to below ",
+                     format(ceiling, big.mark = ",",scientific = FALSE),
+                     " (~",format_duration(opt_est_seconds), " to ",format_duration(opt_est_seconds*5),
+                     "). \n=~ To change this threshold, use the 'ceiling' argument."))
+
+      # --- Prefilter: drop items whose relevance is far weaker (by a
+      # relative ratio, not an absolute cutoff) than the strongest item,
+      # before beam search enumerates its starting triples ---
+      if (!is.null(prefilter.ratio) && is.finite(prefilter.ratio)) {
+        item_relevance <- relevance[cols]
+        keep_mask <- item_relevance >= (max(item_relevance, na.rm = TRUE) / prefilter.ratio)
+        keep_mask[is.na(keep_mask)] <- TRUE  # never drop items with undefined relevance
+
+        if (sum(keep_mask) >= n.items) {
+          n_before <- length(cols)
+          cols <- cols[keep_mask]
+          if (length(cols) < n_before) {
+            message(sprintf("=~ Prefilter: keeping %d of %d items (relevance >= 1/%g of the strongest item) before beam search.",
+                            length(cols), n_before, prefilter.ratio))
+          }
+        }
+      }
+
+      # --- Adaptive beam width: scale to the (post-prefilter) pool size
+      # and the same ceiling budget the user already set ---
+      if (is.null(beam.width)) {
+        beam.width <- max(500, min(10000, ceiling %/% max(length(cols), 1)))
+      }
+
+      cols <- perform_optimization(cols, data, n.items, ceiling, target, na.rm, beam.width, opt.n)
+
+    } else {
+      message(sprintf("=~ Note: %s combinations exceeds ceiling (%s) but optimise = FALSE -- running exhaustive search anyway. This may be slow.",
+                      format(num_combinations, big.mark = ",", scientific = FALSE),
+                      format(ceiling, big.mark = ",", scientific = FALSE)))
+    }
   }
   
   cols_names <- filtered_names[cols]
   
-  t6 <- Sys.time()
+  mark_time("combination_optimisation")
   
   # Subset to optimized columns
   data <- data[, cols, drop = FALSE]
   if (cross.validate) { data_holdout <- data_holdout[, cols, drop = FALSE] }
   
-  t7 <- Sys.time()
+  mark_time("column_subsetting")
   
   # Apply standardization if requested
   if (scale.vars) data <- apply(data, 2, scale)
   
-  t8 <- Sys.time()
+  mark_time("scaling")
   
   # Heuristic: Check for wide variations in item scales
   if (!scale.vars) {
@@ -804,34 +928,41 @@ reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALS
   
   num_choose_from <- ncol(data)
   
-  t9 <- Sys.time()
+  mark_time("scale_range_check")
   
   # Process combinations and build leaderboard (always uses indices internally)
   cpp_results <- process_combinations_in_batches(data, target, num_choose_from,
                                                  original_indices, na.rm,
                                                  is_binary, n.items, ranking_metric,
-                                                 optimize_for, show.progress)
-  
+                                                 optimize_for, show.progress, leaderboard_length,
+                                                 speed)
+
+  if (isTRUE(cpp_results$used_fast_path)) {
+    message("=~ Fast path: missing data detected, searched using mean-imputed values (all reported statistics are recomputed from the true data). Use speed = 'conservative' to disable.")
+  }
+
   leaderboard <- cpp_results$leaderboard
   timings_cpp <- cpp_results$timings_cpp                                                                                                                   
   
   # Clean up leaderboard
   rownames(leaderboard) <- NULL
   
-  t10 <- Sys.time()
+  mark_time("combination_scoring")
   
+  # Parse leaderboard combinations once, shared by both steps below
+  parsed_combos <- parse_leaderboard_combinations(leaderboard, original_indices)
+
   # Extract best items
-  best_items <- extract_best_items(leaderboard, item.set, data, original_indices)
-  
-  t11 <- Sys.time()
-  
+  best_items <- extract_best_items(data, parsed_combos)
+
+  mark_time("extract_best_items")
+
   # Calculate item-level correlations
-  ind_cors <- calculate_item_correlations(leaderboard, data, 
-                                          original_indices, target, items_to_flip)
+  ind_cors <- calculate_item_correlations(data, target, items_to_flip, cols_names, parsed_combos)
   
   ind_keys <- 2*(as.numeric(strsplit(ind_cors[item.set], ',')[[1]]) > 0)-1
   
-  t12 <- Sys.time()
+  mark_time("item_correlations")
   
   # Cross-validate if requested
   if (cross.validate) {
@@ -870,26 +1001,13 @@ reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALS
   }
   
   
-  t13 <- Sys.time()
+  mark_time("cross_validation_and_rsq")
   
   # --- REASSEMBLE DATA FOR SCORE GENERATION ---
   # Merges Training and Holdout sets back into original row order
   if (cross.validate) {
-    n_total <- nrow(data) + nrow(data_holdout)
-    
-    # Initialize container with original dimensions
-    data_reassembled <- matrix(NA, nrow = n_total, ncol = ncol(data))
-    colnames(data_reassembled) <- colnames(data)
-    
-    # Slot rows back into their saved original indices
-    data_reassembled[cv_subset, ] <- as.matrix(data)
-    
-    #free up memory immediately, then continue
-    rm(data)
-    data_reassembled[cv_holdout, ] <- as.matrix(data_holdout)
-    
-    # Overwrite 'data' with the full, unscrambled dataset
-    data <- data_reassembled
+    combined_idx <- c(cv_subset, cv_holdout)
+    data <- rbind(as.matrix(data), as.matrix(data_holdout))[order(combined_idx), , drop = FALSE]
   }
   
   # Generate scores if requested
@@ -906,38 +1024,26 @@ reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALS
   
   # Convert combination column to names if requested
   if (item.names) {
-   # leaderboard$combination <- sapply(strsplit(leaderboard$combination, ','), function(indices) {
-   #   idx_nums <- as.numeric(indices)
-   #   paste(original_names[idx_nums], collapse = ",")
-   # })
     leaderboard$combination <- best_items$best_names
   }
   
-  timings_r = data.frame(
-    time1 = as.numeric(difftime(t1,t0, units = "secs")),
-    time2 = as.numeric(difftime(t2,t1, units = "secs")),
-    time3 = as.numeric(difftime(t3,t2, units = "secs")),
-    time4 = as.numeric(difftime(t4,t3, units = "secs")),
-    time5 = as.numeric(difftime(t5,t4, units = "secs")),
-    time6 = as.numeric(difftime(t6,t5, units = "secs")),
-    time7 = as.numeric(difftime(t7,t6, units = "secs")),
-    time8 = as.numeric(difftime(t8,t7, units = "secs")),
-    time9 = as.numeric(difftime(t9,t8, units = "secs")),
-    time10= as.numeric(difftime(t10,t9, units = "secs")),
-    time11= as.numeric(difftime(t11,t10, units = "secs")),
-    time12= as.numeric(difftime(t12,t11, units = "secs")),
-    time13= as.numeric(difftime(t13,t12, units = "secs"))
+  # Elapsed time between consecutive checkpoints, keyed by the step's descriptive label
+  step_secs <- diff(vapply(checkpoints, as.numeric, numeric(1)))
+  names(step_secs) <- names(checkpoints)[-1]
+  total_secs <- sum(step_secs)
+
+  timings_r <- data.frame(
+    step = c(names(step_secs), "total"),
+    s = round(c(step_secs, total_secs), 4),
+    row.names = NULL
   )
-  timings_r$total <- rowSums(timings_r)
-  
-  timings_r = cbind(s = as.vector(round(timings_r,4)),
-                    percent = as.vector(round(200*timings_r/rowSums(timings_r),2)))
-  
-  names(timings_cpp) <- paste0('time',1:length(timings_cpp))
+  timings_r$percent <- round(100 * timings_r$s / total_secs, 2)
+
+  names(timings_cpp) <- paste0('time', seq_along(timings_cpp))
   timings_cpp <- c(timings_cpp, total = sum(timings_cpp))
-  
-  timings_cpp = cbind(s = round(timings_cpp,4),
-                      percent = as.vector(round(200*timings_cpp/sum(timings_cpp),2)))
+
+  timings_cpp <- cbind(s = round(timings_cpp, 4),
+                       percent = round(100 * timings_cpp / timings_cpp["total"], 2))
   
   # ============================================================================
   # CONSTRUCT RESULTS OBJECT

@@ -2,10 +2,18 @@
 # Generator token: 10BE3573-1514-4C36-9D1C-5A225CD40393
 
 process_all_combinations_cpp_parallel_float <- function(data, n_items, num_choose_from, na_rm, target, original_indices, keep_top = 100L, show_progress = TRUE) {
-    .Call('_reduceTo_process_all_combinations_cpp_parallel_float', PACKAGE = 'reduceTo', data, n_items, num_choose_from, na_rm, target, original_indices, keep_top, show_progress)
+    .Call(`_reduceTo_process_all_combinations_cpp_parallel_float`, data, n_items, num_choose_from, na_rm, target, original_indices, keep_top, show_progress)
 }
 
-evaluate_beam_cpp <- function(data, combinations, target, na_rm) {
-    .Call('_reduceTo_evaluate_beam_cpp', PACKAGE = 'reduceTo', data, combinations, target, na_rm)
+process_all_combinations_cpp_gram <- function(gram, col_sums, col_target_dots, sum_target, sum_target_sq, n_valid, n_items, num_choose_from, original_indices, keep_top = 100L, show_progress = TRUE) {
+    .Call(`_reduceTo_process_all_combinations_cpp_gram`, gram, col_sums, col_target_dots, sum_target, sum_target_sq, n_valid, n_items, num_choose_from, original_indices, keep_top, show_progress)
+}
+
+compress_matrix_cpp <- function(data) {
+    .Call(`_reduceTo_compress_matrix_cpp`, data)
+}
+
+evaluate_beam_cpp <- function(packed_data, combinations, target, na_rm) {
+    .Call(`_reduceTo_evaluate_beam_cpp`, packed_data, combinations, target, na_rm)
 }
 

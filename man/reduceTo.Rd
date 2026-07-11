@@ -16,12 +16,14 @@ reduceTo(
   show.progress = T,
   cross.validate = 0,
   optimise = TRUE,
-  beam.width = 2000,
+  prefilter.ratio = 5,
+  beam.width = NULL,
   opt.n = 5000,
   ceiling = 5e+05,
   scale.vars = FALSE,
   na.rm = TRUE,
-  method = NULL
+  method = NULL,
+  speed = c("fast", "conservative")
 )
 }
 \arguments{
@@ -29,8 +31,8 @@ reduceTo(
 
 \item{n.items}{Desired number of items in the final short-form scale}
 
-\item{target}{Optional target criterion. Can be specified as: NULL (default) for 
-internal consistency, an unquoted column name from data, or an external vector 
+\item{target}{Optional target criterion. Can be specified as: NULL (default) for
+internal consistency, an unquoted column name from data, or an external vector
 (numeric criterion or binary 0/1 for classification)}
 
 \item{n.sets}{Number of top-performing item sets to return (default: 5)}
@@ -39,61 +41,85 @@ internal consistency, an unquoted column name from data, or an external vector
 
 \item{r.sq}{If TRUE, returns R² alongside correlation (default: FALSE)}
 
-\item{generate}{If TRUE, returns computed scores for selected item set (default: FALSE)}
+\item{generate}{If TRUE, returns computed scores for selected item set (default: TRUE)}
 
 \item{item.set}{Which ranked set to generate scores for, used with generate = TRUE (default: 1)}
 
 \item{show.progress}{If TRUE, displays progress bar during computation (default: TRUE)}
 
-\item{cross.validate}{Numeric input controlling a data split into Training/Holdout 
+\item{cross.validate}{Numeric input controlling a data split into Training/Holdout
 sets; if TRUE or 1, uses a 75\%/25\% split (default: FALSE)}
 
-\item{optimise}{Controls heuristic pruning for large item pools: TRUE (default) 
-automatically optimises if combinations exceed ceiling; FALSE forces exhaustive 
+\item{optimise}{Controls heuristic pruning for large item pools: TRUE (default)
+automatically optimises if combinations exceed ceiling; FALSE forces exhaustive
 search (can be slow)}
 
-\item{beam.width}{The number of top-performing subsets retained at each expansion 
-stage during heuristic optimisation (default: 2000)}
+\item{prefilter.ratio}{Before optimisation runs, items whose relevance (|correlation|
+with the target, or item-total centrality when no target is supplied) is more than
+\code{prefilter.ratio} times weaker than the strongest item are dropped from the pool,
+which narrows what the beam search has to enumerate. Uses a \emph{relative} threshold so
+it stays sensible when every item is weakly correlated (e.g. predicting a low-signal
+external criterion) -- items are compared to each other, not to an absolute cutoff.
+Never prunes below \code{n.items} remaining columns. Set to \code{Inf} or \code{NULL}
+to disable (default: 5)}
 
-\item{opt.n}{The maximum number of cases (rows) to subsample during the heuristic 
+\item{beam.width}{The number of top-performing subsets retained at each expansion
+stage during heuristic optimisation. Default \code{NULL} picks a width scaled to
+\code{ceiling} and the (post-prefilter) item pool size; pass a number to override}
+
+\item{opt.n}{The maximum number of cases (rows) to subsample during the heuristic
 beam search (default: 5000)}
 
 \item{ceiling}{Combination threshold triggering optimisation (default: 500,000)}
 
 \item{scale.vars}{If TRUE, mean-centers and scales all columns (default: FALSE)}
 
-\item{na.rm}{If TRUE, handles missing values via pairwise deletion (default: TRUE)}
+\item{na.rm}{If TRUE, handles missing values via pairwise deletion (default: TRUE).
+Governs the \emph{reported} scoring/statistics in both \code{speed} modes; it does not
+affect how \code{speed = "fast"} searches, since the imputed search data has no
+missingness left to prorate around}
 
-\item{method}{Metric for ranking combinations (default: NULL for auto-selection): 
-"r" for Pearson correlation, "youden_j" for Youden's Index, or "binarised_r" 
+\item{method}{Metric for ranking combinations (default: NULL for auto-selection):
+"r" for Pearson correlation, "youden_j" for Youden's Index, or "binarised_r"
 for correlation of binarised sum score (binary targets)}
+
+\item{speed}{Controls how the exhaustive search handles missing data:
+\code{"fast"} (default) mean-imputes a search-only copy of the data and scores
+combinations from precomputed column moments (a Gram matrix), which is dramatically
+faster for large search spaces; \code{"conservative"} uses the original per-combination
+pairwise-deletion scoring throughout, with no imputation. \code{"fast"} only changes
+behaviour when the data actually has missing values -- with complete data the two
+modes are identical. Under \code{"fast"}, imputation is used only to accelerate the
+search: every statistic in the returned leaderboard (r, and for binary targets the
+cutoff/Youden's J/binarised r) is recomputed from the true, non-imputed data before
+being reported, so results are never based on imputed values -- only the search is faster}
 }
 \value{
 A list of class \code{reduced_scale} containing:
 \describe{
-  \item{output}{Data frame of the top n.sets combinations and their performance metrics}
-  \item{leaderboard}{Extended data frame of the top 100 combinations}
-  \item{best_names}{Character vector of item names in the top-ranked set}
-  \item{best_indices}{Integer vector of column indices in the top-ranked set}
-  \item{scores}{(If generate = TRUE) A data frame containing the sum scores}
-  \item{binary_info}{(If binary target) A list containing optimal cutoffs and classification metrics}
-  \item{params}{List of parameters used in the function call}
+\item{output}{Data frame of the top n.sets combinations and their performance metrics}
+\item{leaderboard}{Extended data frame of the top 100 combinations}
+\item{best_names}{Character vector of item names in the top-ranked set}
+\item{best_indices}{Integer vector of column indices in the top-ranked set}
+\item{scores}{(If generate = TRUE) A data frame containing the sum scores}
+\item{binary_info}{(If binary target) A list containing optimal cutoffs and classification metrics}
+\item{params}{List of parameters used in the function call}
 }
 }
 \description{
-Systematically evaluates all possible subsets of items from a larger scale to 
-find the combination that maximises either internal consistency or correlation 
-with an external criterion. Runs on a parallelised C++ backend with 
-memory-optimised data structures (8-bit compression) to evaluate millions of 
+Systematically evaluates all possible subsets of items from a larger scale to
+find the combination that maximises either internal consistency or correlation
+with an external criterion. Runs on a parallelised C++ backend with
+memory-optimised data structures (8-bit compression) to evaluate millions of
 combinations in seconds.
 }
 \details{
 \strong{Key Features:}
 \itemize{
-  \item \strong{Combinatorial Search}: Exhaustively scores item subsets to guarantee finding the best-performing item set within the search space.
-  \item \strong{Heuristic Optimisation}: When the number of combinations exceeds the computational ceiling, the function automatically reduces the item pool through a beam search before searching.
-  \item \strong{Cross-Validation}: Supports a Train/Holdout split (default 75/25) to validate findings and prevent overfitting. Reports performance metrics for both the training and holdout samples side-by-side.
-  \item \strong{Binary Classifications}: For binary targets (0/1), automatically finds the optimal integer cut-off score to maximise classification accuracy (Youden's J) or binarised correlation.
+\item \strong{Combinatorial Search}: Exhaustively scores item subsets to guarantee finding the best-performing item set within the search space.
+\item \strong{Heuristic Optimisation}: When the number of combinations exceeds the computational ceiling, the function automatically reduces the item pool through a beam search before searching.
+\item \strong{Cross-Validation}: Supports a Train/Holdout split (default 75/25) to validate findings and prevent overfitting. Reports performance metrics for both the training and holdout samples side-by-side.
+\item \strong{Binary Classifications}: For binary targets (0/1), automatically finds the optimal integer cut-off score to maximise classification accuracy (Youden's J) or binarised correlation.
 }
 }
 \examples{
@@ -114,5 +140,5 @@ print(results_binary)
 }
 }
 \author{
-Paddy Maher, Goldsmiths, University of London
+Paddy Maher, Max Planck Institute for Human Development
 }
