@@ -846,8 +846,12 @@ reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALS
 
       # --- Calibrate a real combos/sec rate on this machine, dataset size,
       # and na.rm setting, instead of extrapolating from a fixed formula ---
+      # Sampled with replacement (occasional repeated items within a row) --
+      # this is only used to measure throughput, not a real search, so exact
+      # combination validity doesn't matter, and a single vectorized sample()
+      # is dramatically cheaper than 20,000 individual replicate() iterations.
       calibration_n <- min(20000, num_combinations)
-      calibration_combos <- t(replicate(calibration_n, sort(sample(cols, n.items))))
+      calibration_combos <- matrix(sample(cols, calibration_n * n.items, replace = TRUE), ncol = n.items)
       calibration_packed <- compress_matrix_cpp(data)
       t_calib <- Sys.time()
       invisible(evaluate_beam_cpp(calibration_packed, calibration_combos, target, na.rm))
