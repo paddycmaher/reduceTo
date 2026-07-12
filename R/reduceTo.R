@@ -62,7 +62,8 @@
 #'   \item{best_indices}{Integer vector of column indices in the top-ranked set}
 #'   \item{scores}{(If generate = TRUE) A data frame containing the sum scores}
 #'   \item{binary_info}{(If binary target) A list containing optimal cutoffs and classification metrics}
-#'   \item{params}{List of parameters used in the function call}
+#'   \item{params}{Named vector of parameters used in the function call, including
+#'     the beam width actually used (NA if optimisation wasn't triggered)}
 #' }
 #'
 #' @author Paddy Maher, Max Planck Institute for Human Development, MPRG Biosocial
@@ -832,6 +833,7 @@ reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALS
   
   # Check if optimization is needed
   num_combinations <- choose(ncol(data), n.items)
+  beam_width_used <- NA
 
   if (num_combinations > ceiling) {
 
@@ -915,6 +917,7 @@ reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALS
       if (is.null(beam.width)) {
         beam.width <- max(200, min(500, BEAM_WIDTH_BUDGET %/% max(length(cols), 1)))
       }
+      beam_width_used <- beam.width
 
       cols <- perform_optimization(cols, data, n.items, ceiling, target, na.rm, beam.width, opt.n, speed, show.progress)
 
@@ -1104,19 +1107,20 @@ reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALS
     best_item_keys = ind_keys,
     scores = if (!is.null(computed_scores)) as.matrix(computed_scores)[, , drop = F] else NULL,
     target = target,
-    original_names = original_names,
-    filtered_names = filtered_names,
-    pool_names = colnames(data),
+    original_items = original_names,
+    filtered_items = filtered_names,
+    final_pool_items = colnames(data),
     pivoting_item = pivot_item,
     timings = list(timings_r = timings_r, timings_cpp = timings_cpp),
-    params = list(
+    params = c(
       n.items = n.items,
       n.sets = n.sets,
       item.set = item.set,
       cross.validated = cross.validate,
       ranking_metric = ranking_metric,
       sample_size = nrow(data),
-      final_pool_size = num_choose_from
+      final_pool_size = num_choose_from,
+      beam.width = beam_width_used
     )
   )
   
@@ -1164,7 +1168,7 @@ print.reduced_scale <- function(x, ...) {
   is_binary <- !is.null(x$binary_info)
   
   # --- HEADER ---
-  type_str <- if(x$params$cross.validated) "Cross-Validated" else "Optimal"
+  type_str <- if(as.numeric(x$params[["cross.validated"]]) > 0) "Cross-Validated" else "Optimal"
   cat("\n=~=", type_str, "Short-Form Scale Results =~=\n")
   
   if (is_binary) {
@@ -1184,7 +1188,7 @@ print.reduced_scale <- function(x, ...) {
   cat("\n=~=~~=~=~~=~~=~=~~=~=\n")
   
   # --- BEST ITEM DETAILS ---
-  cat(paste0("\nSelected Set (Rank ",x$params$item.set,"):"))
+  cat(paste0("\nSelected Set (Rank ",x$params[["item.set"]],"):"))
   if (!is.null(x$best_names)) {
     cat("\nItems (Names): ", paste(x$best_names, collapse = ", "))
   }

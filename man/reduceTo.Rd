@@ -95,7 +95,8 @@ A list of class \code{reduced_scale} containing:
 \item{best_indices}{Integer vector of column indices in the top-ranked set}
 \item{scores}{(If generate = TRUE) A data frame containing the sum scores}
 \item{binary_info}{(If binary target) A list containing optimal cutoffs and classification metrics}
-\item{params}{List of parameters used in the function call}
+\item{params}{Named vector of parameters used in the function call, including
+the beam width actually used (NA if optimisation wasn't triggered)}
 }
 }
 \description{

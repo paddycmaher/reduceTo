@@ -10,7 +10,7 @@ test_that("prefilter narrows the pool to strongly-correlated items", {
   r <- reduceTo(data, n.items = 3, target = target, ceiling = 50,
                prefilter.ratio = 5, show.progress = FALSE)
 
-  expect_true(length(r$pool_names) < 24)
+  expect_true(length(r$final_pool_items) < 24)
   expect_true(all(grepl("Strong", r$best_names)))
 })
 
