@@ -23,7 +23,8 @@ reduceTo(
   scale.vars = FALSE,
   na.rm = TRUE,
   method = NULL,
-  speed = c("fast", "conservative")
+  speed = c("fast", "conservative"),
+  verbose = TRUE
 )
 }
 \arguments{
@@ -45,7 +46,9 @@ internal consistency, an unquoted column name from data, or an external vector
 
 \item{item.set}{Which ranked set to generate scores for, used with generate = TRUE (default: 1)}
 
-\item{show.progress}{If TRUE, displays progress bar during computation (default: TRUE)}
+\item{show.progress}{If TRUE, displays the live progress bar/speedometer during the
+exhaustive search and the beam search's per-stage updates (default: TRUE). Does not
+affect informational messages -- see \code{verbose}}
 
 \item{cross.validate}{Numeric input controlling a data split into Training/Holdout
 sets; if TRUE or 1, uses a 75\%/25\% split (default: FALSE)}
@@ -97,6 +100,12 @@ speed. Regardless of mode, every statistic in the returned leaderboard (r, and f
 binary targets the cutoff/Youden's J/binarised r) is always recomputed from the true,
 non-imputed data before being reported, so results are never based on imputed values
 -- only the search is faster}
+
+\item{verbose}{If TRUE, prints informational messages (binary/target detection,
+optimisation triggers, prefilter/fast-path notices, scale-range warnings, etc.;
+default: TRUE). Set to FALSE to silence these while keeping the live progress
+bar/speedometer and beam search updates, which are controlled separately by
+\code{show.progress}}
 }
 \value{
 A list of class \code{reduced_scale} containing:

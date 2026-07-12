@@ -25,7 +25,9 @@
 #' @param r.sq If TRUE, returns R² alongside correlation (default: FALSE)
 #' @param generate If TRUE, returns computed scores for selected item set (default: TRUE)
 #' @param item.set Which ranked set to generate scores for, used with generate = TRUE (default: 1)
-#' @param show.progress If TRUE, displays progress bar during computation (default: TRUE)
+#' @param show.progress If TRUE, displays the live progress bar/speedometer during the
+#'   exhaustive search and the beam search's per-stage updates (default: TRUE). Does not
+#'   affect informational messages -- see \code{verbose}
 #' @param cross.validate Numeric input controlling a data split into Training/Holdout
 #'   sets; if TRUE or 1, uses a 75%/25% split (default: FALSE)
 #' @param optimise Controls heuristic pruning for large item pools: TRUE (default)
@@ -67,6 +69,11 @@
 #'   binary targets the cutoff/Youden's J/binarised r) is always recomputed from the true,
 #'   non-imputed data before being reported, so results are never based on imputed values
 #'   -- only the search is faster
+#' @param verbose If TRUE, prints informational messages (binary/target detection,
+#'   optimisation triggers, prefilter/fast-path notices, scale-range warnings, etc.;
+#'   default: TRUE). Set to FALSE to silence these while keeping the live progress
+#'   bar/speedometer and beam search updates, which are controlled separately by
+#'   \code{show.progress}
 #'
 #' @return A list of class \code{reduced_scale} containing:
 #' \describe{
@@ -105,7 +112,8 @@
 reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALSE, r.sq = FALSE,
                      generate = TRUE, item.set = 1, show.progress = T, cross.validate = 0,
                      optimise = TRUE, prefilter.ratio = 5, beam.width = NULL, opt.n = 5000, ceiling = 1e8,
-                     scale.vars = FALSE, na.rm = TRUE, method = NULL, speed = c("fast", "conservative")){
+                     scale.vars = FALSE, na.rm = TRUE, method = NULL, speed = c("fast", "conservative"),
+                     verbose = TRUE){
 
   speed <- match.arg(speed)
   
@@ -261,7 +269,7 @@ reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALS
     )
   }
 
-  perform_optimization <- function(current_cols, data, n.items, ceiling, targ, na.rm, beam_width, opt.n, speed) {
+  perform_optimization <- function(current_cols, data, n.items, ceiling, targ, na.rm, beam_width, opt.n, speed, show.progress) {
 
     # --- SUBSAMPLING ---
     n_total <- nrow(data)
@@ -307,12 +315,14 @@ reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALS
 
     while (k <= n.items) {
 
-      if (k %% 2 == 0) {
-        cat(sprintf("\r~{ Beam search }~ =~= Evaluating subsets: %d of %d items", k, n.items))
-        flush.console()
-      } else {
-        cat(sprintf("\r~{ Beam search }~ =+= Evaluating subsets: %d of %d items", k, n.items))
-        flush.console()
+      if (show.progress) {
+        if (k %% 2 == 0) {
+          cat(sprintf("\r~{ Beam search }~ =~= Evaluating subsets: %d of %d items", k, n.items))
+          flush.console()
+        } else {
+          cat(sprintf("\r~{ Beam search }~ =+= Evaluating subsets: %d of %d items", k, n.items))
+          flush.console()
+        }
       }
 
       # 1. Evaluate current combinations via C++
@@ -748,38 +758,38 @@ reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALS
     # If scale.vars is TRUE with binary target, treat as continuous
     if (is_binary && scale.vars) {
       is_binary <- FALSE
-      message("scale.vars = TRUE: treating binary target as continuous variable")
+      if (verbose) message("scale.vars = TRUE: treating binary target as continuous variable")
     }
-    
+
     if (is_binary) {
-      message("=~= Binary target detected (values: 0, 1): optimising for classification performance.")
+      if (verbose) message("=~= Binary target detected (values: 0, 1): optimising for classification performance.")
     }
   }
-  
+
   # Determine ranking metric and optimization method
   if (is_binary) {
     # Validate method for binary targets
     valid_binary_methods <- c("r", "binarised_r", "youden_j")
-    
+
     if (is.null(method)) {
       ranking_metric <- "youden_j"
-      message("=~= Ranking combinations by Youden's J (use method = 'binarised_r' or 'r' to change)")
+      if (verbose) message("=~= Ranking combinations by Youden's J (use method = 'binarised_r' or 'r' to change)")
     } else if (method %in% valid_binary_methods) {
       ranking_metric <- method
     } else {
-      stop(paste0("For binary targets, method must be one of: ", 
+      stop(paste0("For binary targets, method must be one of: ",
                   paste(valid_binary_methods, collapse = ", ")))
     }
-    
+
     optimize_for <- ranking_metric
-    
+
   } else {
     # Non-binary target
     ranking_metric <- "r"
     optimize_for <- NULL
-    
+
     if (!is.null(method)) {
-      message("Note: 'method' parameter ignored for non-binary targets")
+      if (verbose) message("Note: 'method' parameter ignored for non-binary targets")
     }
   }
 
@@ -958,14 +968,16 @@ reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALS
       est_seconds <- num_combinations / combos_per_sec
       opt_est_seconds <- ceiling / combos_per_sec
 
-      message(paste0("=~ Optimisation triggered: this dataset would generate ",
-                     format(num_combinations, big.mark = ",",scientific = FALSE),
-                     " combinations (~",format_duration(est_seconds), " to ",format_duration(est_seconds*5),
-                     " with N = ",format(nrow(data), big.mark = ",",scientific = FALSE) ,
-                     "). \n=~ Optimisation will be used to reduce combinations to below ",
-                     format(ceiling, big.mark = ",",scientific = FALSE),
-                     " (~",format_duration(opt_est_seconds), " to ",format_duration(opt_est_seconds*5),
-                     "). \n=~ To change this threshold, use the 'ceiling' argument."))
+      if (verbose) {
+        message(paste0("=~ Optimisation triggered: this dataset would generate ",
+                       format(num_combinations, big.mark = ",",scientific = FALSE),
+                       " combinations (~",format_duration(est_seconds), " to ",format_duration(est_seconds*5),
+                       " with N = ",format(nrow(data), big.mark = ",",scientific = FALSE) ,
+                       "). \n=~ Optimisation will be used to reduce combinations to below ",
+                       format(ceiling, big.mark = ",",scientific = FALSE),
+                       " (~",format_duration(opt_est_seconds), " to ",format_duration(opt_est_seconds*5),
+                       "). You can change this threshold with the 'ceiling' argument."))
+      }
 
       # --- Prefilter: drop items whose relevance is far weaker (by a
       # relative ratio, not an absolute cutoff) than the strongest item,
@@ -978,7 +990,7 @@ reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALS
         if (sum(keep_mask) >= n.items) {
           n_before <- length(cols)
           cols <- cols[keep_mask]
-          if (length(cols) < n_before) {
+          if (length(cols) < n_before && verbose) {
             message(sprintf("=~ Prefilter: keeping %d of %d items (relevance >= 1/%g of the strongest item) before beam search.",
                             length(cols), n_before, prefilter.ratio))
           }
@@ -1008,12 +1020,14 @@ reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALS
         beam.width <- max(500, min(2000, BEAM_WIDTH_BUDGET %/% max(length(cols), 1)))
       }
 
-      cols <- perform_optimization(cols, data, n.items, ceiling, target, na.rm, beam.width, opt.n, speed)
+      cols <- perform_optimization(cols, data, n.items, ceiling, target, na.rm, beam.width, opt.n, speed, show.progress)
 
     } else {
-      message(sprintf("=~ Note: %s combinations exceeds ceiling (%s) but optimise = FALSE -- running exhaustive search anyway. This may be slow.",
-                      format(num_combinations, big.mark = ",", scientific = FALSE),
-                      format(ceiling, big.mark = ",", scientific = FALSE)))
+      if (verbose) {
+        message(sprintf("=~ Note: %s combinations exceeds ceiling (%s) but optimise = FALSE -- running exhaustive search anyway. This may be slow.",
+                        format(num_combinations, big.mark = ",", scientific = FALSE),
+                        format(ceiling, big.mark = ",", scientific = FALSE)))
+      }
     }
   }
   
@@ -1038,8 +1052,8 @@ reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALS
     
     # If the largest scale is > 3x larger than the smallest, warn the user
     # (e.g. mixing Binary (0-1) with Likert (1-7) or 100-point scales)
-    if (max(col_ranges) / min(col_ranges) > 2) {
-      message(sprintf("Note: Wide variation in item scales detected (Ranges: %s to %s).\nConsider setting 'scale.vars = TRUE' to ensure consistent weighting.", 
+    if (max(col_ranges) / min(col_ranges) > 2 && verbose) {
+      message(sprintf("Note: Wide variation in item scales detected (Ranges: %s to %s).\nConsider setting 'scale.vars = TRUE' to ensure consistent weighting.",
                       round(min(col_ranges), 2), round(max(col_ranges), 2)))
     }
   }
@@ -1063,8 +1077,8 @@ reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALS
                                                  optimize_for, show.progress, leaderboard_length,
                                                  speed)
 
-  if (isTRUE(cpp_results$imputed_for_search)) {
-    message("=~ Fast path: missing data detected, searched using mean-imputed values (all reported statistics are recomputed from the true data). Use speed = 'conservative' to disable.")
+  if (isTRUE(cpp_results$imputed_for_search) && verbose) {
+    message("=~ Fast path: missing data detected, searched using mean-imputed values. All reported statistics are recomputed from the true data. Use speed = 'conservative' to disable.")
   }
 
   leaderboard <- cpp_results$leaderboard
