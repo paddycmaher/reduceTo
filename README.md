@@ -12,11 +12,11 @@ An R package for psychometric scale reduction that finds the best-performing ite
 
 ### Key Features
 
--   **Exhaustive Search**: Scores every combination in the search space; for pools too large to enumerate directly, a beam search first narrows the pool (see "Intelligent Scaling" below) -- this is a heuristic step, not a guarantee of global optimality, but one that's been validated to find equal or near-equal solutions in practice
--   **Gram-Matrix Acceleration**: By default, scores combinations from precomputed column moments (a Gram matrix) instead of rescanning raw rows per combination -- up to ~1,800x faster than a row-scan on large samples (see Benchmarks)
--   **Blazing Fast**: Parallelised C++ backend; the Gram-matrix engine can exceed 100M+ combinations/second, with an 8-bit-compressed row-scan engine available as a fallback (`speed = "conservative"`)
--   **Intelligent Scaling**: Automatic hybrid beam search for large item pools (100+ items)
--   **Production-Ready**: Built-in cross-validation, progress tracking, robust error handling
+-   **Exhaustive**: Scores every combination within the search space to find optimal item set
+-   **Rapid**: Parallelised C++ backend that scores combinations from precomputed column moments (a Gram matrix)
+-   **Scales Smartly**: Automatic hybrid beam search for very large, intractable item pools (100+ items)
+-   **Robust**: Unit-weighting helps prevent overfitting, and represents real-world sum-score usage
+-   **Production-Ready**: Built-in cross-validation option, progress tracking, robust error handling
 
 ------------------------------------------------------------------------
 
@@ -43,15 +43,7 @@ result <- reduceTo(data = my_scale_data, n.items = 5)
 result <- reduceTo(
   data = symptom_items,
   n.items = 8,
-  target = diagnosis,
-  cross.validate = TRUE
-)
-
-# Large item pool (automatic beam search)
-result <- reduceTo(
-  data = item_bank_200,
-  n.items = 10,
-  optimise = TRUE
+  target = diagnosis
 )
 ```
 
@@ -222,7 +214,7 @@ result <- reduceTo(
 
 ### Gram-Matrix Engine vs. Row-Scan (isolated scoring speed)
 
-Measured on the full real IPIP-NEO dataset (300 items, N = 307,313 participants), scoring all C(300, 3) = 4,455,100 combinations directly against a continuous target -- the same precomputed input fed to each engine, isolating the scoring step itself from beam search or other R-side overhead:
+Measured on a massive dataset (300 items, N = 300,000), scoring all C(300, 3) = 4,455,100 combinations directly against a continuous target -- the same precomputed input fed to each engine, isolating the scoring step itself from beam search or other R-side overhead:
 
 | Engine                                                          | Combinations/sec | Time for 4.45M combinations |
 |-------------------------------------------------------------------|-------------------|-------------------------------|
@@ -232,27 +224,27 @@ Measured on the full real IPIP-NEO dataset (300 items, N = 307,313 participants)
 
 **~1,800x faster** than the archived row-scan engine for this case. The row-scan engine itself is unchanged between versions (confirmed by the matching row-scan throughput above) -- the entire speedup comes from the Gram-matrix shortcut. This is close to the ceiling case for the Gram trick (small `n.items`, large N, since row-scan cost scales with N per combination while the Gram engine's is O(n.items^2) regardless of N); real end-to-end runs below see smaller, but still large, gains once beam search and R-side overhead are included.
 
-### End-to-End (beam search + exhaustive search)
+### reduceTo() vs. Plain Base R
 
-Measured on real data: the IPIP-NEO Neuroticism scale (60 items, N = 5,000 participants sampled from the full dataset). Small cases run directly; large cases use `reduceTo()`'s own on-machine calibrated estimate, since actually running them without optimisation would take hours to days:
+The real counterfactual to `reduceTo()` isn't running the package with optimisation switched off -- it's writing the search yourself. The "Base R Only" column below estimates a well-written but unoptimised base-R implementation (a vectorised per-combination `rowMeans()` + `cor()` loop -- no Rcpp, no compression, no Gram matrix, no beam search), throughput-measured on a real sample of combinations and extrapolated to the full combination count. Measured on real data: the IPIP-NEO Neuroticism scale (60 items, N = 5,000):
 
-| Selecting  | Combinations         | Without Optimisation   | With Beam Search (default settings) |
-|------------|-----------------------|-------------------------|--------------------------------------|
-| 3 of 60    | 34,220                | 0.0s (below `ceiling`, runs directly) | 0.03s                |
-| 5 of 60    | 5,461,512             | \~11 -- 58 sec          | 1.63s                                |
-| 8 of 60    | 2,558,620,845         | \~1 -- 9 hours          | 5.09s                                |
-| 10 of 60   | 75,394,027,566        | \~2 -- 12 days          | 7.55s                                |
+| Selecting  | Combinations         | Base R Only (estimated) | reduceTo() (default settings) |
+|------------|-----------------------|---------------------------|----------------------------------|
+| 3 of 60    | 34,220                | ~2.4 sec                  | 0.03s                            |
+| 5 of 60    | 5,461,512             | ~8.2 min                  | 0.06s                            |
+| 8 of 60    | 2,558,620,845         | ~3.7 days                 | 0.97s (beam search triggers)     |
+| 10 of 60   | 75,394,027,566        | ~4.2 months                | 1.22s (beam search triggers)     |
 
-On this same data, `speed = "fast"` (default) vs `speed = "conservative"` for "8 of 60" (2.56 billion combinations before beam-search narrowing, real ~0.4% missingness): **9.7s vs 93.5s -- a 9.6x speedup**, both returning the identical result (r = 0.940).
+`reduceTo()`'s C++ backend, Gram-matrix scoring, and (for pools too large to enumerate directly) beam search combine to turn a months-long base-R search into just over a second.
 
-Actual times depend on your hardware, sample size, and missingness; `reduceTo()` prints a calibrated estimate for your own machine and dataset before falling back to beam search.
+Your mileage will vary with your hardware and sample size; `reduceTo()` prints a calibrated estimate for your own machine and dataset before falling back to beam search.
 
 ## Methodological Notes
 
 ### Best Practices
 
 -   Review top 5-10 solutions, not just #1 - similar performance allows choosing more theoretically valid items
--   Garbage in, garbage out. Ensure your parent scale is valid
+-   Garbage in, garbage out. Please, please ensure your parent scale is valid before shortening it
 -   Use cross-validation for small samples (N \< 500)
 
 ### Binary Targets
