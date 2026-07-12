@@ -117,7 +117,7 @@ result <- reduceTo(
 |--------------|---------------------------------------------|--------------|
 | `optimise` | Enable beam search for large pools | `TRUE` |
 | `prefilter.ratio` | Before beam search, drop items whose relevance is more than this many times weaker than the strongest item (set `Inf`/`NULL` to disable) | `5` |
-| `beam.width` | Top combinations kept per stage; `NULL` scales it to pool size automatically (500-2000, independent of `ceiling`) | `NULL` |
+| `beam.width` | Top combinations kept per stage; `NULL` scales it to pool size automatically (200-500, independent of `ceiling`) | `NULL` |
 | `ceiling` | Combination threshold for optimisation | `100,000,000` |
 | `opt.n` | Max rows for beam search (speeds up large N) | `5000` |
 | `speed` | `"fast"` mean-imputes missing data to score combinations via a Gram-matrix shortcut (reported statistics are always recomputed from the true data); `"conservative"` uses pairwise deletion throughout with no imputation | `"fast"` |
@@ -248,6 +248,7 @@ Your mileage will vary with your hardware and sample size; `reduceTo()` prints a
 -   **Point-biserial r**: Equivalent to Cohen's d, correlates with AUC
 -   **Youden's J**: Maximises sensitivity + specificity - 1
 -   **Binarised r**: Applies optimal cutoff first, may find different solutions
+-   **AUC**: Threshold-independent; always reported alongside the others (`leaderboard$auc`, `binary_info$results$auc`) but not selectable via `method=`, since it can't be scored via the same fast moment-based shortcuts as the other metrics
 
 ------------------------------------------------------------------------
 

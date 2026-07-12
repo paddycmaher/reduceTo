@@ -12,7 +12,7 @@
 #'   \item \strong{Combinatorial Search}: Exhaustively scores item subsets to guarantee finding the best-performing item set within the search space.
 #'   \item \strong{Heuristic Optimisation}: When the number of combinations exceeds the computational ceiling, the function automatically reduces the item pool through a beam search before searching.
 #'   \item \strong{Cross-Validation}: Supports a Train/Holdout split (default 75/25) to validate findings and prevent overfitting. Reports performance metrics for both the training and holdout samples side-by-side.
-#'   \item \strong{Binary Classifications}: For binary targets (0/1), automatically finds the optimal integer cut-off score to maximise classification accuracy (Youden's J) or binarised correlation.
+#'   \item \strong{Binary Classifications}: For binary targets (0/1), automatically finds the optimal integer cut-off score to maximise classification accuracy (Youden's J) or binarised correlation. AUC (threshold-independent) is also reported.
 #' }
 #'
 #' @param data Matrix or data.frame containing item responses
@@ -43,8 +43,12 @@
 #'   to disable (default: 5)
 #' @param beam.width The number of top-performing subsets retained at each expansion
 #'   stage during heuristic optimisation. Default \code{NULL} picks a width scaled to
-#'   the (post-prefilter) item pool size (capped between 500 and 2000, independent of
-#'   \code{ceiling}); pass a number to override
+#'   the (post-prefilter) item pool size (bounded between 200 and 500, independent of
+#'   \code{ceiling}); pass a number to override. The default range is validated against
+#'   typical (unidimensional, multidimensional, varying reliability/missingness) item
+#'   structures but is not a guarantee against pathological cases -- data with strong
+#'   suppressor/synergistic item structure (items individually weak or opposite-signed
+#'   but jointly informative) may benefit from a wider explicit value
 #' @param opt.n The maximum number of cases (rows) to subsample during the heuristic
 #'   beam search (default: 5000)
 #' @param ceiling Combination threshold triggering optimisation (default: 100,000,000)
@@ -116,7 +120,19 @@ reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALS
                      verbose = TRUE){
 
   speed <- match.arg(speed)
-  
+
+  # reduceTo() calls set.seed(1) internally at several points (subsampling for
+  # item-flipping correlations, beam search, cross-validation splits) to keep
+  # its own internal sampling reproducible. Without saving/restoring the
+  # caller's RNG state, this leaks out: any set.seed()-driven work a caller
+  # does AFTER calling reduceTo() would silently restart from the same
+  # post-set.seed(1) state every time, e.g. turning a Monte Carlo simulation
+  # loop into unintended repeats of a single draw.
+  if (exists(".Random.seed", envir = globalenv())) {
+    old_seed <- get(".Random.seed", envir = globalenv())
+    on.exit(assign(".Random.seed", old_seed, envir = globalenv()), add = TRUE)
+  }
+
   # ============================================================================
   # HELPER FUNCTIONS
   # ============================================================================
@@ -241,7 +257,26 @@ reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALS
       youden_j = youden_j
     ))
   }
-  
+
+  # Area under the ROC curve for a continuous sum score against a binary
+  # target, via the Mann-Whitney U / rank-sum identity -- threshold-independent,
+  # unlike binarised_r/youden_j/cutoff which all depend on picking a cutoff.
+  # Deliberately not offered as a `method=` ranking option: unlike r, it has
+  # no O(k^2) Gram-matrix shortcut (it depends on the full rank ordering of
+  # scores, not just their moments), so it's only computed here, cheaply, for
+  # the already-narrowed top `keep_top` leaderboard rows -- not used to drive
+  # the search itself.
+  compute_auc <- function(scores, binary_target) {
+    valid <- !is.na(scores) & !is.na(binary_target)
+    s <- scores[valid]
+    t <- binary_target[valid]
+    n_pos <- sum(t == 1)
+    n_neg <- sum(t == 0)
+    if (n_pos == 0 || n_neg == 0) return(NA)
+    ranks <- rank(s, ties.method = "average")
+    (sum(ranks[t == 1]) - n_pos * (n_pos + 1) / 2) / (n_pos * n_neg)
+  }
+
   # Mean-impute missing values in a search-only copy (a no-op when data is
   # already complete) and precompute the Gram-matrix moments needed to score
   # any k-item sum score in O(k^2): pool x pool crossprod, column sums,
@@ -491,6 +526,7 @@ reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALS
         binarised_r <- numeric(nrow(leaderboard))
         cutoff <- numeric(nrow(leaderboard))
         youden_j <- numeric(nrow(leaderboard))
+        auc <- numeric(nrow(leaderboard))
       }
 
       for (i in 1:nrow(leaderboard)) {
@@ -510,6 +546,7 @@ reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALS
           binarised_r[i] <- cutoff_info$binarised_r
           cutoff[i] <- cutoff_info$optimal_integer_cutoff
           youden_j[i] <- cutoff_info$youden_j
+          auc[i] <- compute_auc(scores, targ)
         }
       }
 
@@ -520,6 +557,7 @@ reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALS
         leaderboard$`>=` <- cutoff
         leaderboard$binarised_r <- binarised_r
         leaderboard$youden_j <- youden_j
+        leaderboard$auc <- auc
 
         # Re-rank by the specified ranking metric
         leaderboard <- leaderboard[order(abs(leaderboard[[ranking_metric]]),
@@ -657,13 +695,19 @@ reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALS
         fn <- sum(preds == 0 & actual == 1)
         
         if ((tp + fn) == 0 || (tn + fp) == 0) return(NA)
-        
+
         sensitivity <- tp / (tp + fn)
         specificity <- tn / (tn + fp)
         return(sensitivity + specificity - 1)
       })
+
+      # AUC on the continuous holdout sum score (threshold-independent,
+      # computed the same way as the training-set auc column)
+      leaderboard$auc_holdout <- sapply(1:n_cols, function(col_idx) {
+        compute_auc(scores_matrix[, col_idx], target)
+      })
     }
-    
+
     return(leaderboard)
   }
   
@@ -998,26 +1042,44 @@ reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALS
       }
 
       # --- Adaptive beam width: scale to the (post-prefilter) pool size,
-      # capped at 2000 (the long-standing historical default). Deliberately
-      # NOT anchored to `ceiling` anymore: ceiling now governs the final
-      # exhaustive stage's size (raised to 100,000,000 by default), a
-      # completely different budget than what a sane beam width should be,
-      # and coupling the two meant a large ceiling silently forced a huge
-      # (slow, not-reliably-better -- beam search is a heuristic, not
-      # exhaustive) beam width regardless of pool size. BEAM_WIDTH_BUDGET
-      # below is a fixed, empirically-tuned constant instead -- chosen to
-      # exactly reproduce this formula's previous output now that it's
-      # decoupled (ceiling's old default, 500,000, was what this formula
-      # was originally tuned and tested against). Beam search's own
-      # row-scan/Gram scoring cost, and now (per profiling after adding the
-      # Gram beam path) the R-side expansion/dedup cost, both scale with
-      # beam_width * pool_size per iteration -- so anchoring to pool size
-      # keeps that cost roughly bounded regardless of how large `ceiling`
-      # is set. Measured beam.width=500 both faster AND slightly better
-      # than 10000 on one real test case, supporting the low cap. ---
-      BEAM_WIDTH_BUDGET <- 500000
+      # bounded between 200 and 500. Deliberately NOT anchored to `ceiling`
+      # anymore: ceiling now governs the final exhaustive stage's size
+      # (raised to 100,000,000 by default), a completely different budget
+      # than what a sane beam width should be, and coupling the two meant a
+      # large ceiling silently forced a huge (slow, not reliably better --
+      # beam search is a heuristic, not exhaustive) beam width regardless of
+      # pool size. BEAM_WIDTH_BUDGET below is a fixed constant instead, so
+      # beam search's own scoring cost and the R-side expansion/dedup cost
+      # (both scale with beam_width * pool_size per iteration) stay bounded
+      # regardless of how large `ceiling` is set.
+      #
+      # Bounds validated via a multi-condition benchmark (real IPIP-NEO data
+      # at multiple pool sizes, 13 simulated structures crossing loading
+      # strength/N/missingness, binary Youden's J targets, prefilter
+      # interactions -- 20+ replications per cell, independently reproduced):
+      # on real data a width of 2000 (the old cap) can actually be WORSE than
+      # 500 due to "frequency dilution" -- a wide beam pulls enough mediocre
+      # combinations into the final iteration's item-frequency vote that a
+      # critical item's count gets diluted below the cutoff and it's dropped
+      # from the final exhaustive pool entirely. A cap of 500 avoided this in
+      # every real-data cell tested.
+      #
+      # The floor of 200 is NOT a guarantee, and callers with reason to
+      # expect strong suppressor/synergistic item structure (e.g. items whose
+      # individual correlations are weak or opposite-signed but combine to
+      # cancel a shared confound) should consider a wider explicit
+      # `beam.width` override. On a deliberately adversarial synthetic
+      # suppressor test, recovery of the true optimum was a smooth,
+      # non-plateauing function of beam width (45% at 50, 60% at 100, 65% at
+      # 200, 70% at 300, 80% at 500, still only 90% at 5000) -- 200 clears
+      # the worst-case failure zone (<=100) but doesn't eliminate risk, and
+      # neither does any width tested. On every non-adversarial structure
+      # checked (unidimensional, multidimensional/facet, varying loading
+      # strength, sample size, and up to 20% MCAR missingness), 200-500
+      # matched exhaustive-search recovery exactly. ---
+      BEAM_WIDTH_BUDGET <- 60000
       if (is.null(beam.width)) {
-        beam.width <- max(500, min(2000, BEAM_WIDTH_BUDGET %/% max(length(cols), 1)))
+        beam.width <- max(200, min(500, BEAM_WIDTH_BUDGET %/% max(length(cols), 1)))
       }
 
       cols <- perform_optimization(cols, data, n.items, ceiling, target, na.rm, beam.width, opt.n, speed, show.progress)
@@ -1241,20 +1303,23 @@ reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALS
       bin_info$train <- list(
         binarised_r = get_metric("binarised_r_train"),
         sum_score_r = get_metric("sum_score_r_train"),
-        youden_j    = get_metric("youden_j_train")
+        youden_j    = get_metric("youden_j_train"),
+        auc         = get_metric("auc_train")
       )
-      
+
       bin_info$holdout <- list(
         binarised_r = get_metric("binarised_r_holdout"),
         sum_score_r = get_metric("sum_score_r_holdout"),
-        youden_j    = get_metric("youden_j_holdout")
+        youden_j    = get_metric("youden_j_holdout"),
+        auc         = get_metric("auc_holdout")
       )
     } else {
       # No CV, just grab standard columns
       bin_info$results <- list(
         binarised_r = get_metric("binarised_r"),
         sum_score_r = get_metric("sum_score_r"),
-        youden_j    = get_metric("youden_j")
+        youden_j    = get_metric("youden_j"),
+        auc         = get_metric("auc")
       )
     }
     
@@ -1314,11 +1379,13 @@ print.reduced_scale <- function(x, ...) {
       cat("\n\nMetric                 Training   Holdout")
       cat("\n-----------------------------------------")
       cat("\n=~=~~=~=~~=~=~~=~~=~+~=~~=~~=~=~~=~=~~=~=")
-      cat(sprintf("\nBinarised Correlation  %8.3f  %8.3f", 
+      cat(sprintf("\nBinarised Correlation  %8.3f  %8.3f",
                   info$train$binarised_r, info$holdout$binarised_r))
-      cat(sprintf("\nYouden's J             %8.3f  %8.3f", 
+      cat(sprintf("\nYouden's J             %8.3f  %8.3f",
                   info$train$youden_j, info$holdout$youden_j))
-      cat(sprintf("\n(Sum Score Correlation %8.3f  %8.3f)", 
+      cat(sprintf("\nAUC                    %8.3f  %8.3f",
+                  info$train$auc, info$holdout$auc))
+      cat(sprintf("\n(Sum Score Correlation %8.3f  %8.3f)",
                   info$train$sum_score_r, info$holdout$sum_score_r))
       cat("\n=~=~~=~=~~=~=~~=~~=~+~=~~=~~=~=~~=~=~~=~=")
       
@@ -1330,6 +1397,7 @@ print.reduced_scale <- function(x, ...) {
       
       cat(sprintf("\nBinarised Correlation  %.3f", info$results$binarised_r))
       cat(sprintf("\nYouden's J             %.3f", info$results$youden_j))
+      cat(sprintf("\nAUC                    %.3f", info$results$auc))
       cat(sprintf("\n(Sum Score Correlation %.3f)", info$results$sum_score_r))
       cat("\n-----------------------------\n")
       cat("\n=~=~~=~=~~=~=~+~=~=~~=~=~~=~=\n")

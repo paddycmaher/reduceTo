@@ -34,6 +34,30 @@ test_that("binary target mode is auto-detected and returns binary_info", {
   expect_true(is.numeric(r$binary_info$cutoff))
 })
 
+test_that("binary target mode reports AUC alongside binarised_r/youden_j", {
+  set.seed(1)
+  data <- as.data.frame(matrix(rnorm(300 * 10), ncol = 10))
+  colnames(data) <- paste0("Item_", 1:10)
+  target_bin <- ifelse(rowMeans(data) > 0, 1, 0)
+
+  r <- reduceTo(data, n.items = 4, target = target_bin, show.progress = FALSE)
+
+  expect_true("auc" %in% colnames(r$leaderboard))
+  expect_true(is.numeric(r$binary_info$results$auc))
+  expect_true(r$binary_info$results$auc >= 0 && r$binary_info$results$auc <= 1)
+
+  # Cross-check against an independent Mann-Whitney U / rank-sum computation
+  # on the top-ranked combination's actual sum scores.
+  manual_auc <- function(s, t) {
+    n1 <- sum(t == 1); n0 <- sum(t == 0)
+    ranks <- rank(s)
+    (sum(ranks[t == 1]) - n1 * (n1 + 1) / 2) / (n1 * n0)
+  }
+  expect_equal(r$binary_info$results$auc,
+               manual_auc(r$scores[, "sum_score"], target_bin),
+               tolerance = 1e-8)
+})
+
 test_that("cross-validation produces holdout metrics", {
   set.seed(1)
   data <- as.data.frame(matrix(rnorm(300 * 10), ncol = 10))

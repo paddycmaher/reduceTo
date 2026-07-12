@@ -68,8 +68,12 @@ to disable (default: 5)}
 
 \item{beam.width}{The number of top-performing subsets retained at each expansion
 stage during heuristic optimisation. Default \code{NULL} picks a width scaled to
-the (post-prefilter) item pool size (capped between 500 and 2000, independent of
-\code{ceiling}); pass a number to override}
+the (post-prefilter) item pool size (bounded between 200 and 500, independent of
+\code{ceiling}); pass a number to override. The default range is validated against
+typical (unidimensional, multidimensional, varying reliability/missingness) item
+structures but is not a guarantee against pathological cases -- data with strong
+suppressor/synergistic item structure (items individually weak or opposite-signed
+but jointly informative) may benefit from a wider explicit value}
 
 \item{opt.n}{The maximum number of cases (rows) to subsample during the heuristic
 beam search (default: 5000)}
@@ -132,7 +136,7 @@ combinations in seconds.
 \item \strong{Combinatorial Search}: Exhaustively scores item subsets to guarantee finding the best-performing item set within the search space.
 \item \strong{Heuristic Optimisation}: When the number of combinations exceeds the computational ceiling, the function automatically reduces the item pool through a beam search before searching.
 \item \strong{Cross-Validation}: Supports a Train/Holdout split (default 75/25) to validate findings and prevent overfitting. Reports performance metrics for both the training and holdout samples side-by-side.
-\item \strong{Binary Classifications}: For binary targets (0/1), automatically finds the optimal integer cut-off score to maximise classification accuracy (Youden's J) or binarised correlation.
+\item \strong{Binary Classifications}: For binary targets (0/1), automatically finds the optimal integer cut-off score to maximise classification accuracy (Youden's J) or binarised correlation. AUC (threshold-independent) is also reported.
 }
 }
 \examples{
