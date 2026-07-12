@@ -69,6 +69,29 @@ test_that("cross-validation produces holdout metrics", {
   expect_true("r_holdout" %in% colnames(r$leaderboard))
 })
 
+test_that("binary_info$train/$holdout are fully populated (no NAs) under cross-validation", {
+  set.seed(1)
+  data <- as.data.frame(matrix(rnorm(300 * 10), ncol = 10))
+  colnames(data) <- paste0("Item_", 1:10)
+  target_bin <- ifelse(rowMeans(data) > 0, 1, 0)
+
+  r <- reduceTo(data, n.items = 4, target = target_bin, cross.validate = TRUE, show.progress = FALSE)
+
+  expect_false(any(is.na(unlist(r$binary_info$train))))
+  expect_false(any(is.na(unlist(r$binary_info$holdout))))
+})
+
+test_that("r.sq = TRUE does not error for binary targets under cross-validation", {
+  set.seed(1)
+  data <- as.data.frame(matrix(rnorm(300 * 10), ncol = 10))
+  colnames(data) <- paste0("Item_", 1:10)
+  target_bin <- ifelse(rowMeans(data) > 0, 1, 0)
+
+  expect_no_error(
+    reduceTo(data, n.items = 4, target = target_bin, cross.validate = TRUE, r.sq = TRUE, show.progress = FALSE)
+  )
+})
+
 test_that("generate defaults to TRUE and produces $scores", {
   set.seed(1)
   data <- as.data.frame(matrix(rnorm(200 * 8), ncol = 8))

@@ -25,59 +25,34 @@
 #' @param r.sq If TRUE, returns R² alongside correlation (default: FALSE)
 #' @param generate If TRUE, returns computed scores for selected item set (default: TRUE)
 #' @param item.set Which ranked set to generate scores for, used with generate = TRUE (default: 1)
-#' @param show.progress If TRUE, displays the live progress bar/speedometer during the
-#'   exhaustive search and the beam search's per-stage updates (default: TRUE). Does not
-#'   affect informational messages -- see \code{verbose}
+#' @param show.progress If TRUE, displays a live progress bar during search (default: TRUE)
 #' @param cross.validate Numeric input controlling a data split into Training/Holdout
 #'   sets; if TRUE or 1, uses a 75%/25% split (default: FALSE)
 #' @param optimise Controls heuristic pruning for large item pools: TRUE (default)
 #'   automatically optimises if combinations exceed ceiling; FALSE forces exhaustive
 #'   search (can be slow)
-#' @param prefilter.ratio Before optimisation runs, items whose relevance (|correlation|
-#'   with the target, or item-total centrality when no target is supplied) is more than
-#'   \code{prefilter.ratio} times weaker than the strongest item are dropped from the pool,
-#'   which narrows what the beam search has to enumerate. Uses a *relative* threshold so
-#'   it stays sensible when every item is weakly correlated (e.g. predicting a low-signal
-#'   external criterion) -- items are compared to each other, not to an absolute cutoff.
-#'   Never prunes below \code{n.items} remaining columns. Set to \code{Inf} or \code{NULL}
-#'   to disable (default: 5)
-#' @param beam.width The number of top-performing subsets retained at each expansion
-#'   stage during heuristic optimisation. Default \code{NULL} picks a width scaled to
-#'   the (post-prefilter) item pool size (bounded between 200 and 500, independent of
-#'   \code{ceiling}); pass a number to override. The default range is validated against
-#'   typical (unidimensional, multidimensional, varying reliability/missingness) item
-#'   structures but is not a guarantee against pathological cases -- data with strong
-#'   suppressor/synergistic item structure (items individually weak or opposite-signed
-#'   but jointly informative) may benefit from a wider explicit value
+#' @param prefilter.ratio Drops items whose relevance (correlation with the target, or
+#'   item-total centrality with no target) is more than \code{prefilter.ratio} times
+#'   weaker than the strongest item, before optimisation runs. Never prunes below
+#'   \code{n.items} columns. Set to \code{Inf} or \code{NULL} to disable (default: 5)
+#' @param beam.width Number of top-performing subsets kept at each expansion stage
+#'   during optimisation. Default \code{NULL} scales it to the item pool size (200-500).
+#'   Increase this if your items include weak or opposite-signed items that only
+#'   predict well when combined
 #' @param opt.n The maximum number of cases (rows) to subsample during the heuristic
 #'   beam search (default: 5000)
 #' @param ceiling Combination threshold triggering optimisation (default: 100,000,000)
 #' @param scale.vars If TRUE, mean-centers and scales all columns (default: FALSE)
-#' @param na.rm If TRUE, handles missing values via pairwise deletion (default: TRUE).
-#'   Governs the *reported* scoring/statistics in both \code{speed} modes; it does not
-#'   affect how \code{speed = "fast"} searches, since its search-only copy of the data
-#'   (mean-imputed where values are missing, unchanged otherwise) never has missingness
-#'   left to prorate around
+#' @param na.rm If TRUE, handles missing values via pairwise deletion (default: TRUE)
 #' @param method Metric for ranking combinations (default: NULL for auto-selection):
 #'   "r" for Pearson correlation, "youden_j" for Youden's Index, or "binarised_r"
 #'   for correlation of binarised sum score (binary targets)
-#' @param speed Controls the algorithm used for both the beam search (when triggered)
-#'   and the exhaustive search: \code{"fast"} (default) scores combinations from
-#'   precomputed column moments (a Gram matrix), which is dramatically faster for large
-#'   search spaces; if the data has missing values, they're mean-imputed in a search-only
-#'   copy first (the Gram decomposition needs complete data), otherwise the Gram matrix is
-#'   built directly from the true data with no approximation either way.
-#'   \code{"conservative"} uses the original per-combination pairwise-deletion scoring
-#'   throughout, with no imputation and no Gram matrix, at the same result but reduced
-#'   speed. Regardless of mode, every statistic in the returned leaderboard (r, and for
-#'   binary targets the cutoff/Youden's J/binarised r) is always recomputed from the true,
-#'   non-imputed data before being reported, so results are never based on imputed values
-#'   -- only the search is faster
-#' @param verbose If TRUE, prints informational messages (binary/target detection,
-#'   optimisation triggers, prefilter/fast-path notices, scale-range warnings, etc.;
-#'   default: TRUE). Set to FALSE to silence these while keeping the live progress
-#'   bar/speedometer and beam search updates, which are controlled separately by
-#'   \code{show.progress}
+#' @param speed \code{"fast"} (default) scores combinations using a Gram-matrix
+#'   shortcut, mean-imputing missing values for search only -- reported statistics are
+#'   always recomputed from the true data. \code{"conservative"} scores every
+#'   combination directly with pairwise deletion: no imputation, but slower
+#' @param verbose If TRUE, prints informational messages (default: TRUE). Progress
+#'   bars and beam search updates are controlled separately by \code{show.progress}
 #'
 #' @return A list of class \code{reduced_scale} containing:
 #' \describe{
@@ -121,13 +96,7 @@ reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALS
 
   speed <- match.arg(speed)
 
-  # reduceTo() calls set.seed(1) internally at several points (subsampling for
-  # item-flipping correlations, beam search, cross-validation splits) to keep
-  # its own internal sampling reproducible. Without saving/restoring the
-  # caller's RNG state, this leaks out: any set.seed()-driven work a caller
-  # does AFTER calling reduceTo() would silently restart from the same
-  # post-set.seed(1) state every time, e.g. turning a Monte Carlo simulation
-  # loop into unintended repeats of a single draw.
+  # Preserve the caller's random state (reduceTo() seeds its own sampling internally)
   if (exists(".Random.seed", envir = globalenv())) {
     old_seed <- get(".Random.seed", envir = globalenv())
     on.exit(assign(".Random.seed", old_seed, envir = globalenv()), add = TRUE)
@@ -142,26 +111,17 @@ reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALS
     is.numeric(x) && !all(is.na(x)) && !any(is.infinite(x)) && sd(x, na.rm = TRUE) > 0
   }
   
-  # Helper to apply item flipping
+  # Reverse-score items negatively correlated with the target
   flip_items <- function(x, the_items) {
-    
-    # 1. Safe check: handles both logical vectors (T/F) and numeric indices (1,5,9)
+
     should_flip <- if(is.logical(the_items)) any(the_items, na.rm = TRUE) else length(the_items) > 0
-    
+
     if (should_flip) {
       if (scale.vars) {
         x[, the_items] <- x[, the_items] * -1
       } else {
-        # FIX: Calculate max for EACH column individually
-        # This handles mixed scales (e.g., flipping a 1-5 item AND a 0-10 item)
-        
-        # We use 'data' (the training set) to establish the maxes.
-        # This ensures that holdout sets are flipped using the training parameters.
+        # max - x, per column, using training-set maxes so holdout data flips consistently
         col_maxes <- apply(data[, the_items, drop = FALSE], 2, max, na.rm = TRUE)
-        
-        # Apply flip: (max - x)
-        # sweep(x, 2, stats, "-") calculates (x - max). 
-        # We multiply by -1 to get (max - x).
         cols_to_mod <- x[, the_items, drop = FALSE]
         x[, the_items] <- -1 * sweep(cols_to_mod, 2, col_maxes, "-")
       }
@@ -258,14 +218,7 @@ reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALS
     ))
   }
 
-  # Area under the ROC curve for a continuous sum score against a binary
-  # target, via the Mann-Whitney U / rank-sum identity -- threshold-independent,
-  # unlike binarised_r/youden_j/cutoff which all depend on picking a cutoff.
-  # Deliberately not offered as a `method=` ranking option: unlike r, it has
-  # no O(k^2) Gram-matrix shortcut (it depends on the full rank ordering of
-  # scores, not just their moments), so it's only computed here, cheaply, for
-  # the already-narrowed top `keep_top` leaderboard rows -- not used to drive
-  # the search itself.
+  # Area under the ROC curve, via the Mann-Whitney U / rank-sum identity
   compute_auc <- function(scores, binary_target) {
     valid <- !is.na(scores) & !is.na(binary_target)
     s <- scores[valid]
@@ -277,13 +230,8 @@ reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALS
     (sum(ranks[t == 1]) - n_pos * (n_pos + 1) / 2) / (n_pos * n_neg)
   }
 
-  # Mean-impute missing values in a search-only copy (a no-op when data is
-  # already complete) and precompute the Gram-matrix moments needed to score
-  # any k-item sum score in O(k^2): pool x pool crossprod, column sums,
-  # column-target dot products, and target moments. Shared by both the
-  # exhaustive stage (process_combinations_in_batches) and the beam search
-  # (perform_optimization) so the same imputation/precompute logic isn't
-  # duplicated between them.
+  # Mean-impute missing values, then precompute the column moments (Gram
+  # matrix, sums, target dot products) needed to score any item combination
   build_gram_components <- function(data, targ) {
     col_means <- colMeans(data, na.rm = TRUE)
     search_data <- data
@@ -318,11 +266,7 @@ reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALS
     used_gram_beam <- identical(speed, "fast")
 
     if (used_gram_beam) {
-      # Build the Gram matrix once, before the beam loop, over ALL columns
-      # of (the subsampled) data -- not just current_cols -- so that
-      # combn()'s real column indices can index straight into gram/col_sums
-      # exactly as evaluate_beam_cpp() already indexes straight into
-      # packed_data by real column number.
+      # Precompute the Gram-matrix moments once, before the beam loop
       gc_components <- build_gram_components(data, targ)
       gram <- gc_components$gram
       col_sums <- gc_components$col_sums
@@ -331,16 +275,7 @@ reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALS
       sum_target_sq <- gc_components$sum_target_sq
       n_valid <- gc_components$n_valid
     } else {
-      # Compress once: the underlying item data doesn't change across beam
-      # iterations below, so pack it a single time instead of re-deriving the
-      # same byte buffer on every evaluate_beam_cpp() call. Must go through
-      # compress_for_cpp() first -- compress_matrix_cpp() is a raw
-      # int-to-byte cast that assumes its input is already scaled into
-      # 0-254 (matching how the exhaustive stage's compressed_data is built
-      # in process_combinations_in_batches()). Calling it directly on raw
-      # item data works by accident for small-integer Likert-style items
-      # (they already fit 0-254) but silently wraps/corrupts continuous or
-      # out-of-range values via uint8_t truncation.
+      # Compress once, reused across every beam iteration
       packed_data <- compress_matrix_cpp(compress_for_cpp(data))
     }
 
@@ -453,7 +388,7 @@ reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALS
     return(compressed)
   }
   
-  # Process combinations in batches to manage memory
+  # Score every combination and build the leaderboard
   process_combinations_in_batches <- function(data, targ, num_choose_from,
                                               original_indices, na.rm,
                                               is_binary, n.items, ranking_metric,
@@ -463,14 +398,7 @@ reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALS
     used_fast_path <- identical(speed, "fast")
 
     if (used_fast_path) {
-      # --- Fast path: score via precomputed column moments (Gram matrix).
-      # When data has missing values, they're mean-imputed in a search-only
-      # copy first; imputation only accelerates *search* -- every statistic
-      # in the returned leaderboard is refined below from the true,
-      # non-imputed data before being reported. When data is already
-      # complete, this imputation step is a no-op (nothing to fill in) and
-      # the Gram matrix is built directly from the true data, so this path
-      # is exact -- not an approximation -- regardless of missingness. ---
+      # Score via the Gram-matrix shortcut (missing values mean-imputed for search only)
       gc_components <- build_gram_components(data, targ)
 
       cpp_result <- process_all_combinations_cpp_gram(
@@ -508,16 +436,8 @@ reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALS
       stringsAsFactors = FALSE
     )
 
-    # Refine the top `keep_top` combinations from the ORIGINAL (non-imputed,
-    # non-compressed) data. This always recomputes `r` from true floating-
-    # point values -- both C++ scoring engines work from data that's been
-    # through some form of lossy reduction (8-bit compression for the
-    # exhaustive path, mean-imputation for the fast/Gram path), so without
-    # this step the leaderboard's `r` reflects that engine's approximation
-    # rather than the actual data. Binary targets additionally need their
-    # classification cutoff computed from the true data. Both reuse the same
-    # per-row scores, so they're computed together in one pass. Bounded to
-    # `keep_top` (100) rows regardless of dataset or pool size.
+    # Recompute exact statistics for the top `keep_top` combinations from the
+    # true data (both scoring engines above work from approximated data)
     {
       top_combos <- strsplit(leaderboard$combination, ',')
 
@@ -530,19 +450,14 @@ reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALS
       }
 
       for (i in 1:nrow(leaderboard)) {
-        # Parse combination indices
         combo_indices <- as.numeric(top_combos[[i]])
         local_cols <- match(combo_indices, original_indices)
-
-        # Calculate scores for this combination from the true data
         scores <- rowMeans(data[, local_cols, drop = FALSE], na.rm = na.rm) * n.items
 
         refined_r[i] <- suppressWarnings(cor(scores, targ, use = "pairwise.complete.obs"))
 
         if (is_binary) {
-          # Find optimal cutoff
           cutoff_info <- find_optimal_cutoff_binary(scores, targ, optimize_for)
-
           binarised_r[i] <- cutoff_info$binarised_r
           cutoff[i] <- cutoff_info$optimal_integer_cutoff
           youden_j[i] <- cutoff_info$youden_j
@@ -553,13 +468,12 @@ reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALS
       leaderboard$r <- refined_r
 
       if (is_binary) {
-        # Add binary metrics and rename correlation column
         leaderboard$`>=` <- cutoff
         leaderboard$binarised_r <- binarised_r
         leaderboard$youden_j <- youden_j
         leaderboard$auc <- auc
 
-        # Re-rank by the specified ranking metric
+        # Re-rank by the chosen metric
         leaderboard <- leaderboard[order(abs(leaderboard[[ranking_metric]]),
                                          decreasing = TRUE), ]
       }
@@ -573,11 +487,8 @@ reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALS
     return(cpp_results)
   }
   
-  # Parse leaderboard$combination (comma-separated original indices) into
-  # sorted index lists and their positions in the current data, once -- both
-  # extract_best_items() and calculate_item_correlations() need this from
-  # the same unchanged leaderboard, so it's computed a single time and
-  # shared rather than each function re-parsing the same strings.
+  # Parse leaderboard$combination into sorted index lists, shared below so
+  # the same strings aren't parsed twice
   parse_leaderboard_combinations <- function(leaderboard, original_indices) {
     comb_list_unordered <- lapply(strsplit(leaderboard$combination, ','), as.numeric)
     comb_list <- lapply(comb_list_unordered, sort)
@@ -585,16 +496,13 @@ reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALS
     return(list(comb_list = comb_list, matched_comb_list = matched_comb_list))
   }
 
-  # Extract best item identifiers from leaderboard
+  # Item names/indices for each leaderboard row
   extract_best_items <- function(data, parsed_combos) {
-
-    # convert indices to column names
     best_names <- lapply(parsed_combos$matched_comb_list, function(x) colnames(data)[x])
-
     return(list(best_names = best_names, best_indices = parsed_combos$comb_list))
   }
 
-  # Calculate individual item correlations for all sets in leaderboard
+  # Correlation of each individual item with the target, for every leaderboard row
   calculate_item_correlations <- function(data, targ, items_to_flip, cols_names, parsed_combos) {
 
     if (nrow(data) > 10000) { set.seed(1); it.cor.sub <- sample(1:nrow(data), 10000) } else it.cor.sub <- 1:nrow(data)
@@ -602,31 +510,29 @@ reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALS
     matched_comb_list <- parsed_combos$matched_comb_list
 
     unflip_indices <- intersect(cols_names, items_to_flip)
-    
+
     flip_items_simple <- function(x, indices){
       x[,indices] <- x[,indices]*(-1)
       return(x)
     }
-    
+
     dc2 <- as.vector(cor(flip_items_simple(data[it.cor.sub,], unflip_indices), targ[it.cor.sub], 'p') )
-    
-    # Calculate correlations for each item in each set
+
     ind_cors <- unlist(
       lapply(
         lapply(matched_comb_list, function(x) round(dc2, 2)[x]),
         paste, collapse = ',')
     )
-    
+
     return(ind_cors)
   }
-  
-  
-  # Generate scores for a specific item set
+
+
+  # Sum scores for a specific item set
   generate_item_scores <- function(data, best_names, na.rm, is_binary, cutoff = NULL) {
-    # Calculate sum scores
     scores_val <- rowMeans(data[, best_names, drop = FALSE], na.rm = na.rm) * length(best_names)
-    
-    # Always return a data frame so column subsetting [ , 1] works
+
+    # Always a data frame so column subsetting [ , 1] works
     if (is_binary) {
       return(data.frame(sum_score = scores_val,
                         binary_score = scores_val >= cutoff))
@@ -635,65 +541,50 @@ reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALS
     }
   }
   
-  cross_validate_leaderboard <- function(leaderboard, data, target, 
+  # Score every leaderboard item set on the holdout data
+  cross_validate_leaderboard <- function(leaderboard, data, target,
                                          na.rm, is_binary, best_names) {
-    
-    # 1. Safety Check: Ensure data exists
+
     if (nrow(data) == 0) stop("Holdout data is empty. Cannot cross-validate.")
-    
-    # 2. Initialize matrices with exact dimensions
+
     n_rows <- nrow(data)
     n_cols <- nrow(leaderboard)
     scores_matrix <- matrix(NA, nrow = n_rows, ncol = n_cols)
-    
-    # 3. Fill matrix
+
     for (i in 1:n_cols) {
-      # Use the specific items for this rank (i)
       current_items <- best_names[[i]]
-      
-      # Calculate scores for these items on the holdout data
-      # Note: rowMeans handles the vector/matrix distinction automatically
       if (length(current_items) == 1) {
-        # Single item case
         scores_matrix[, i] <- data[[current_items]]
       } else {
-        # Multi item case
         scores_matrix[, i] <- rowMeans(data[, current_items, drop = FALSE], na.rm = na.rm) * length(current_items)
       }
     }
-    
-    # 4. Handle Binary Logic (if needed)
+
     if (is_binary) {
       binary_matrix <- matrix(NA, nrow = n_rows, ncol = n_cols)
       for (i in 1:n_cols) {
         binary_matrix[, i] <- as.numeric(scores_matrix[, i] >= leaderboard$`>=`[i])
       }
     }
-    
-    # 5. Calculate Holdout Correlations
-    # We use 'pairwise.complete.obs' to handle any NAs safely
+
     leaderboard$r_holdout <- as.vector(cor(scores_matrix, target, use = 'pairwise.complete.obs'))
 
     if (is_binary) {
-      
-      # Binarised Correlation
       leaderboard$binarised_r_holdout <- as.vector(cor(binary_matrix, target, use = 'pairwise.complete.obs'))
-      
-      # Youden's J Calculation
+
       leaderboard$youden_j_holdout <- sapply(1:n_cols, function(col_idx) {
         preds <- binary_matrix[, col_idx]
         actual <- target
-        
-        # Remove NAs for calculation
+
         valid <- !is.na(preds) & !is.na(actual)
         preds <- preds[valid]
         actual <- actual[valid]
-        
+
         tp <- sum(preds == 1 & actual == 1)
         tn <- sum(preds == 0 & actual == 0)
         fp <- sum(preds == 1 & actual == 0)
         fn <- sum(preds == 0 & actual == 1)
-        
+
         if ((tp + fn) == 0 || (tn + fp) == 0) return(NA)
 
         sensitivity <- tp / (tp + fn)
@@ -701,8 +592,6 @@ reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALS
         return(sensitivity + specificity - 1)
       })
 
-      # AUC on the continuous holdout sum score (threshold-independent,
-      # computed the same way as the training-set auc column)
       leaderboard$auc_holdout <- sapply(1:n_cols, function(col_idx) {
         compute_auc(scores_matrix[, col_idx], target)
       })
@@ -837,13 +726,8 @@ reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALS
     }
   }
 
-  # Ranking by Youden's J is especially prone to discarding good candidates
-  # during the r-based search/pruning stages (item flipping, prefiltering,
-  # and the exhaustive/beam search itself all rank on point-biserial r, not
-  # J -- a combination with weak r but strong classification performance at
-  # its optimal cutoff can otherwise never reach the leaderboard). Keeping a
-  # wider leaderboard before the true-data refinement step gives J a wider
-  # net to recover from, at a bounded, still-cheap cost.
+  # Youden's J needs a wider leaderboard: earlier stages rank by r, which can
+  # discard combinations with weak r but strong classification performance
   leaderboard_length <- if (identical(ranking_metric, "youden_j")) 1000 else 100
 
   mark_time("target_resolution")
@@ -914,9 +798,7 @@ reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALS
     #create target
     target <- rowMeans(data, na.rm = na.rm)
 
-    # Item relevance for the pre-optimisation prefilter: total absolute
-    # correlation with the rest of the pool (item-total-style centrality),
-    # reusing the matrix already computed above for pivot selection.
+    # Used later to prefilter weak items before optimisation
     relevance <- centrality
   }
 
@@ -935,8 +817,7 @@ reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALS
     data <- flip_items(data, items_to_flip)
     pivot_item <- NA
 
-    # Item relevance for the pre-optimisation prefilter: |correlation| with
-    # the target, reusing the vector already computed above for flipping.
+    # Used later to prefilter weak items before optimisation
     relevance <- abs(as.vector(dc))
   }
   
@@ -956,17 +837,9 @@ reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALS
 
     if (optimise) {
 
-      # --- Calibrate a real combos/sec rate on this machine, dataset size,
-      # and na.rm setting, instead of extrapolating from a fixed formula.
-      # Calibrated against whichever engine will actually run the final
-      # search: the Gram engine under speed = "fast" is a fundamentally
-      # different (much faster) cost model than the row-scan engine under
-      # "conservative", so timing the wrong one gives a wildly pessimistic
-      # estimate for "fast" -- this bit us in practice. ---
+      # Measure real combinations/sec on this machine to estimate runtime
       if (identical(speed, "fast")) {
-        # Gram engine: per-combination cost is ~O(n.items^2) regardless of
-        # which specific items, so a small stand-in pool gives a
-        # representative combos/sec without needing a large sample.
+        # Gram engine cost doesn't depend on which items, so a small sample suffices
         col_means <- colMeans(data, na.rm = TRUE)
         calib_data <- data
         na_mask <- is.na(calib_data)
@@ -995,12 +868,7 @@ reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALS
         combos_per_sec <- calib_combos / max(as.numeric(difftime(Sys.time(), t_calib, units = "secs")), 1e-6)
 
       } else {
-        # Conservative engine: row-scan cost depends on which rows/items are
-        # actually touched, so sample real combinations at real scale.
-        # Sampled with replacement (occasional repeated items within a row)
-        # -- this only measures throughput, not a real search, so exact
-        # combination validity doesn't matter, and a single vectorized
-        # sample() is dramatically cheaper than 20,000 replicate() calls.
+        # Row-scan cost depends on the data, so sample real combinations
         calibration_n <- min(20000, num_combinations)
         calibration_combos <- matrix(sample(cols, calibration_n * n.items, replace = TRUE), ncol = n.items)
         calibration_packed <- compress_matrix_cpp(compress_for_cpp(data))
@@ -1023,9 +891,7 @@ reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALS
                        "). You can change this threshold with the 'ceiling' argument."))
       }
 
-      # --- Prefilter: drop items whose relevance is far weaker (by a
-      # relative ratio, not an absolute cutoff) than the strongest item,
-      # before beam search enumerates its starting triples ---
+      # Drop items far weaker than the strongest before beam search
       if (!is.null(prefilter.ratio) && is.finite(prefilter.ratio)) {
         item_relevance <- relevance[cols]
         keep_mask <- item_relevance >= (max(item_relevance, na.rm = TRUE) / prefilter.ratio)
@@ -1041,42 +907,10 @@ reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALS
         }
       }
 
-      # --- Adaptive beam width: scale to the (post-prefilter) pool size,
-      # bounded between 200 and 500. Deliberately NOT anchored to `ceiling`
-      # anymore: ceiling now governs the final exhaustive stage's size
-      # (raised to 100,000,000 by default), a completely different budget
-      # than what a sane beam width should be, and coupling the two meant a
-      # large ceiling silently forced a huge (slow, not reliably better --
-      # beam search is a heuristic, not exhaustive) beam width regardless of
-      # pool size. BEAM_WIDTH_BUDGET below is a fixed constant instead, so
-      # beam search's own scoring cost and the R-side expansion/dedup cost
-      # (both scale with beam_width * pool_size per iteration) stay bounded
-      # regardless of how large `ceiling` is set.
-      #
-      # Bounds validated via a multi-condition benchmark (real IPIP-NEO data
-      # at multiple pool sizes, 13 simulated structures crossing loading
-      # strength/N/missingness, binary Youden's J targets, prefilter
-      # interactions -- 20+ replications per cell, independently reproduced):
-      # on real data a width of 2000 (the old cap) can actually be WORSE than
-      # 500 due to "frequency dilution" -- a wide beam pulls enough mediocre
-      # combinations into the final iteration's item-frequency vote that a
-      # critical item's count gets diluted below the cutoff and it's dropped
-      # from the final exhaustive pool entirely. A cap of 500 avoided this in
-      # every real-data cell tested.
-      #
-      # The floor of 200 is NOT a guarantee, and callers with reason to
-      # expect strong suppressor/synergistic item structure (e.g. items whose
-      # individual correlations are weak or opposite-signed but combine to
-      # cancel a shared confound) should consider a wider explicit
-      # `beam.width` override. On a deliberately adversarial synthetic
-      # suppressor test, recovery of the true optimum was a smooth,
-      # non-plateauing function of beam width (45% at 50, 60% at 100, 65% at
-      # 200, 70% at 300, 80% at 500, still only 90% at 5000) -- 200 clears
-      # the worst-case failure zone (<=100) but doesn't eliminate risk, and
-      # neither does any width tested. On every non-adversarial structure
-      # checked (unidimensional, multidimensional/facet, varying loading
-      # strength, sample size, and up to 20% MCAR missingness), 200-500
-      # matched exhaustive-search recovery exactly. ---
+      # Scale beam width to the item pool size (200-500), independent of `ceiling`.
+      # A wider beam isn't always better -- it can dilute which items get kept
+      # for the final search -- so this isn't a hard guarantee against every
+      # dataset; pass beam.width explicitly to override.
       BEAM_WIDTH_BUDGET <- 60000
       if (is.null(beam.width)) {
         beam.width <- max(200, min(500, BEAM_WIDTH_BUDGET %/% max(length(cols), 1)))
@@ -1108,12 +942,10 @@ reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALS
   
   mark_time("scaling")
   
-  # Heuristic: Check for wide variations in item scales
+  # Warn if items use very different scales (e.g. mixing 0-1 and 1-7 items)
   if (!scale.vars) {
     col_ranges <- apply(data, 2, function(x) diff(range(x, na.rm = TRUE)))
-    
-    # If the largest scale is > 3x larger than the smallest, warn the user
-    # (e.g. mixing Binary (0-1) with Likert (1-7) or 100-point scales)
+
     if (max(col_ranges) / min(col_ranges) > 2 && verbose) {
       message(sprintf("Note: Wide variation in item scales detected (Ranges: %s to %s).\nConsider setting 'scale.vars = TRUE' to ensure consistent weighting.",
                       round(min(col_ranges), 2), round(max(col_ranges), 2)))
@@ -1174,11 +1006,11 @@ reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALS
     }
     
     leaderboard <- cross_validate_leaderboard(
-      leaderboard = leaderboard, 
-      data = data_holdout,         # Explicitly pass the holdout set
-      target = target_holdout,     # Explicitly pass the holdout target
-      na.rm = na.rm, 
-      is_binary = is_binary, 
+      leaderboard = leaderboard,
+      data = data_holdout,
+      target = target_holdout,
+      na.rm = na.rm,
+      is_binary = is_binary,
       best_names = best_items$best_names
     )
   }
@@ -1189,15 +1021,15 @@ reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALS
       if (!cross.validate) {
         leaderboard$R2 <- leaderboard$r^2
       } else {
-        leaderboard$R2_train <- leaderboard$r_train^2
+        leaderboard$R2_train <- leaderboard$r^2
         leaderboard$R2_holdout <- leaderboard$r_holdout^2
       }
     } else {
       if (!cross.validate) {
-        leaderboard$sum_scored_R <- leaderboard$sum_score_r^2
+        leaderboard$sum_scored_R <- leaderboard$r^2
       } else {
-        leaderboard$sum_scored_R2_train <- leaderboard$sum_score_r_train^2
-        leaderboard$binarised_R2_train <- leaderboard$binarised_r_train^2
+        leaderboard$sum_scored_R2_train <- leaderboard$r^2
+        leaderboard$binarised_R2_train <- leaderboard$binarised_r^2
       }
     }
   }
@@ -1205,8 +1037,7 @@ reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALS
   
   mark_time("cross_validation_and_rsq")
   
-  # --- REASSEMBLE DATA FOR SCORE GENERATION ---
-  # Merges Training and Holdout sets back into original row order
+  # Merge training/holdout sets back into original row order
   if (cross.validate) {
     combined_idx <- c(cv_subset, cv_holdout)
     data <- rbind(as.matrix(data), as.matrix(data_holdout))[order(combined_idx), , drop = FALSE]
@@ -1289,35 +1120,32 @@ reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALS
     )
   )
   
-  # ROBUST BINARY INFO POPULATION
+  # Binary classification metrics
   if (is_binary) {
-    # 1. Always get the cutoff (it doesn't change names)
     bin_info <- list(
       cutoff = leaderboard$`>=`[item.set],
       ranking_metric = ranking_metric,
       is_cv = cross.validate
     )
-    
-    # 2. Extract Training Metrics (handle _train rename if CV occurred)
+
     if (cross.validate) {
       bin_info$train <- list(
-        binarised_r = get_metric("binarised_r_train"),
-        sum_score_r = get_metric("sum_score_r_train"),
-        youden_j    = get_metric("youden_j_train"),
-        auc         = get_metric("auc_train")
+        binarised_r = get_metric("binarised_r"),
+        sum_score_r = get_metric("r"),
+        youden_j    = get_metric("youden_j"),
+        auc         = get_metric("auc")
       )
 
       bin_info$holdout <- list(
         binarised_r = get_metric("binarised_r_holdout"),
-        sum_score_r = get_metric("sum_score_r_holdout"),
+        sum_score_r = get_metric("r_holdout"),
         youden_j    = get_metric("youden_j_holdout"),
         auc         = get_metric("auc_holdout")
       )
     } else {
-      # No CV, just grab standard columns
       bin_info$results <- list(
         binarised_r = get_metric("binarised_r"),
-        sum_score_r = get_metric("sum_score_r"),
+        sum_score_r = get_metric("r"),
         youden_j    = get_metric("youden_j"),
         auc         = get_metric("auc")
       )

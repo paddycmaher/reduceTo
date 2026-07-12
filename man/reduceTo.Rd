@@ -46,9 +46,7 @@ internal consistency, an unquoted column name from data, or an external vector
 
 \item{item.set}{Which ranked set to generate scores for, used with generate = TRUE (default: 1)}
 
-\item{show.progress}{If TRUE, displays the live progress bar/speedometer during the
-exhaustive search and the beam search's per-stage updates (default: TRUE). Does not
-affect informational messages -- see \code{verbose}}
+\item{show.progress}{If TRUE, displays a live progress bar during search (default: TRUE)}
 
 \item{cross.validate}{Numeric input controlling a data split into Training/Holdout
 sets; if TRUE or 1, uses a 75\%/25\% split (default: FALSE)}
@@ -57,23 +55,15 @@ sets; if TRUE or 1, uses a 75\%/25\% split (default: FALSE)}
 automatically optimises if combinations exceed ceiling; FALSE forces exhaustive
 search (can be slow)}
 
-\item{prefilter.ratio}{Before optimisation runs, items whose relevance (|correlation|
-with the target, or item-total centrality when no target is supplied) is more than
-\code{prefilter.ratio} times weaker than the strongest item are dropped from the pool,
-which narrows what the beam search has to enumerate. Uses a \emph{relative} threshold so
-it stays sensible when every item is weakly correlated (e.g. predicting a low-signal
-external criterion) -- items are compared to each other, not to an absolute cutoff.
-Never prunes below \code{n.items} remaining columns. Set to \code{Inf} or \code{NULL}
-to disable (default: 5)}
+\item{prefilter.ratio}{Drops items whose relevance (correlation with the target, or
+item-total centrality with no target) is more than \code{prefilter.ratio} times
+weaker than the strongest item, before optimisation runs. Never prunes below
+\code{n.items} columns. Set to \code{Inf} or \code{NULL} to disable (default: 5)}
 
-\item{beam.width}{The number of top-performing subsets retained at each expansion
-stage during heuristic optimisation. Default \code{NULL} picks a width scaled to
-the (post-prefilter) item pool size (bounded between 200 and 500, independent of
-\code{ceiling}); pass a number to override. The default range is validated against
-typical (unidimensional, multidimensional, varying reliability/missingness) item
-structures but is not a guarantee against pathological cases -- data with strong
-suppressor/synergistic item structure (items individually weak or opposite-signed
-but jointly informative) may benefit from a wider explicit value}
+\item{beam.width}{Number of top-performing subsets kept at each expansion stage
+during optimisation. Default \code{NULL} scales it to the item pool size (200-500).
+Increase this if your items include weak or opposite-signed items that only
+predict well when combined}
 
 \item{opt.n}{The maximum number of cases (rows) to subsample during the heuristic
 beam search (default: 5000)}
@@ -82,34 +72,19 @@ beam search (default: 5000)}
 
 \item{scale.vars}{If TRUE, mean-centers and scales all columns (default: FALSE)}
 
-\item{na.rm}{If TRUE, handles missing values via pairwise deletion (default: TRUE).
-Governs the \emph{reported} scoring/statistics in both \code{speed} modes; it does not
-affect how \code{speed = "fast"} searches, since its search-only copy of the data
-(mean-imputed where values are missing, unchanged otherwise) never has missingness
-left to prorate around}
+\item{na.rm}{If TRUE, handles missing values via pairwise deletion (default: TRUE)}
 
 \item{method}{Metric for ranking combinations (default: NULL for auto-selection):
 "r" for Pearson correlation, "youden_j" for Youden's Index, or "binarised_r"
 for correlation of binarised sum score (binary targets)}
 
-\item{speed}{Controls the algorithm used for both the beam search (when triggered)
-and the exhaustive search: \code{"fast"} (default) scores combinations from
-precomputed column moments (a Gram matrix), which is dramatically faster for large
-search spaces; if the data has missing values, they're mean-imputed in a search-only
-copy first (the Gram decomposition needs complete data), otherwise the Gram matrix is
-built directly from the true data with no approximation either way.
-\code{"conservative"} uses the original per-combination pairwise-deletion scoring
-throughout, with no imputation and no Gram matrix, at the same result but reduced
-speed. Regardless of mode, every statistic in the returned leaderboard (r, and for
-binary targets the cutoff/Youden's J/binarised r) is always recomputed from the true,
-non-imputed data before being reported, so results are never based on imputed values
--- only the search is faster}
+\item{speed}{\code{"fast"} (default) scores combinations using a Gram-matrix
+shortcut, mean-imputing missing values for search only -- reported statistics are
+always recomputed from the true data. \code{"conservative"} scores every
+combination directly with pairwise deletion: no imputation, but slower}
 
-\item{verbose}{If TRUE, prints informational messages (binary/target detection,
-optimisation triggers, prefilter/fast-path notices, scale-range warnings, etc.;
-default: TRUE). Set to FALSE to silence these while keeping the live progress
-bar/speedometer and beam search updates, which are controlled separately by
-\code{show.progress}}
+\item{verbose}{If TRUE, prints informational messages (default: TRUE). Progress
+bars and beam search updates are controlled separately by \code{show.progress}}
 }
 \value{
 A list of class \code{reduced_scale} containing:
