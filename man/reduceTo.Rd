@@ -72,7 +72,12 @@ predict well when combined}
 \item{opt.n}{The maximum number of cases (rows) to subsample during the heuristic
 beam search (default: 5000)}
 
-\item{ceiling}{Combination threshold triggering optimisation (default: 100,000,000)}
+\item{ceiling}{Combination threshold triggering optimisation (default: 10,000,000).
+A tighter ceiling narrows the item pool further before the final exhaustive search,
+which is faster but leaves less room to recover from an imperfect ranking -- this
+matters most for items whose value only appears when combined with several specific
+others (see \code{optimise}); a more generous ceiling reduces that risk under either
+\code{optimise} method}
 
 \item{scale.vars}{If TRUE, mean-centers and scales all columns (default: FALSE)}
 

@@ -82,3 +82,35 @@ test_that("progressive narrowing recovers a synergistic/suppressor item set", {
   n_xy <- sum(grepl("^[XY]", r$best_names))
   expect_true(n_xy >= 4)
 })
+
+test_that("a higher-order (3-group) suppressor structure needs a generous ceiling to recover -- known limitation, not specific to progressive narrowing", {
+  # A/B/C carry -Wa, -Wb, and +Wa+Wb respectively -- no PAIR of groups fully
+  # cancels the bias, only a genuine A+B+C combination does. A tight ceiling
+  # (small final pool) leaves no margin to survive an imperfect early ranking;
+  # this is a shared limitation of beam search too (verified separately), not
+  # a progressive-narrowing-specific regression.
+  set.seed(4013)
+  n <- 2000
+  Z1 <- rnorm(n); Z2 <- rnorm(n); Z3 <- rnorm(n)
+  Wa <- rnorm(n) * 2.5; Wb <- rnorm(n) * 2.5
+  n_distractors <- 48
+  pool <- 9 + n_distractors
+
+  data <- matrix(ncol = pool, nrow = n)
+  for (i in 1:3) data[, i] <- Z1 - Wa + rnorm(n) * 0.4
+  for (i in 4:6) data[, i] <- Z2 - Wb + rnorm(n) * 0.4
+  for (i in 7:9) data[, i] <- Z3 + Wa + Wb + rnorm(n) * 0.4
+  for (i in 10:pool) data[, i] <- 0.3 * (Z1 + Z2 + Z3) + rnorm(n) * 0.9
+  colnames(data) <- c(paste0("A", 1:3), paste0("B", 1:3), paste0("C", 1:3), paste0("D", 1:n_distractors))
+  data <- as.data.frame(data)
+  set.seed(4099)
+  data <- data[, sample(ncol(data))]
+
+  target <- Z1 + Z2 + Z3
+
+  r <- reduceTo(data, n.items = 7, target = target, ceiling = 5000000,
+               optimise = "progressive", show.progress = FALSE)
+
+  n_abc <- sum(grepl("^[ABC]", r$best_names))
+  expect_true(n_abc >= 5)
+})
