@@ -18,7 +18,7 @@ test_that("speed = 'fast' is a no-op message-wise when data is complete", {
 
   expect_no_message(
     reduceTo(data, n.items = 3, speed = "fast", show.progress = FALSE),
-    message = "Fast path"
+    message = "Fast mode"
   )
 })
 
@@ -42,7 +42,7 @@ test_that("speed = 'fast' reports the true pairwise-deletion r under missing dat
   expect_equal(r_fast$r, true_r, tolerance = 1e-6)
   expect_message(
     reduceTo(data_na, n.items = 3, target = target, speed = "fast", show.progress = FALSE),
-    "Fast path"
+    "Fast mode"
   )
 })
 
@@ -59,6 +59,6 @@ test_that("speed = 'conservative' never prints the fast-path message", {
 
   expect_no_message(
     reduceTo(data_na, n.items = 3, speed = "conservative", show.progress = FALSE),
-    message = "Fast path"
+    message = "Fast mode"
   )
 })

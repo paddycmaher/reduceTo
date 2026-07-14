@@ -78,14 +78,14 @@ result <- reduceTo(data, n.items = 6, target = diagnosis)
 
 ### Intelligent Optimisation for Large Pools
 
-When exhaustive search becomes intractable, reduceTo employs **hybrid beam search** to narrow the search area, before moving to **exhaustive search**:
+When exhaustive search becomes intractable, reduceTo narrows the search area first, before moving to **exhaustive search**. By default this uses **progressive-k narrowing**: exhaustively scores every combination at a small k, keeps the best-performing items, then grows k and repeats against the shrinking pool -- cheap because of the Gram-matrix shortcut, and it never discards a combination without actually scoring it. The original **beam search** (grow candidate combinations, keep the top `beam.width` at each stage) is still available via `optimise = "beam"`.
 
 ``` r
 # Choose 10 from 200 items (2.5 trillion combinations)
 result <- reduceTo(data = large_item_bank, n.items = 10)
 ```
 
-**Process:** 1. Prefilter: drops items far weaker than the strongest by relevance 2. Beam search: builds 3 → 4 → ... → 10 items, keeping the top combinations at each stage (`beam.width`, auto-scaled by default) 3. Item extraction: identifies the most promising items 4. Exhaustive search: guarantees optimum within refined pool
+**Process (`optimise = "progressive"`, default):** 1. Prefilter: drops items far weaker than the strongest by relevance 2. Progressive narrowing: exhaustively scores combinations at k = 2, 3, ... , ranking items by their best achieved score and dropping the weakest, until the remaining pool is small enough 3. Exhaustive search: guarantees optimum within the refined pool
 
 ### Cross-Validation
 
@@ -115,11 +115,11 @@ result <- reduceTo(
 
 | Parameter | Description | Default |
 |--------------|---------------------------------------------|--------------|
-| `optimise` | Enable beam search for large pools | `TRUE` |
-| `prefilter.ratio` | Before beam search, drop items whose relevance is more than this many times weaker than the strongest item (set `Inf`/`NULL` to disable) | `5` |
-| `beam.width` | Top combinations kept per stage; `NULL` scales it to pool size automatically (200-500, independent of `ceiling`) | `NULL` |
-| `ceiling` | Combination threshold for optimisation | `100,000,000` |
-| `opt.n` | Max rows for beam search (speeds up large N) | `5000` |
+| `optimise` | Heuristic pruning for large item pools: `"progressive"` narrows the item pool via exhaustive small-k scoring, `"beam"` uses the original beam search, `"none"` forces exhaustive search regardless of `ceiling` | `"progressive"` |
+| `prefilter.ratio` | Before optimisation runs, drop items whose relevance is more than this many times weaker than the strongest item (set `Inf`/`NULL` to disable) | `5` |
+| `beam.width` | (`optimise = "beam"` only) Top combinations kept per stage; `NULL` scales it to pool size automatically (200-500, independent of `ceiling`) | `NULL` |
+| `ceiling` | Combination threshold for optimisation | `10,000,000` |
+| `opt.n` | Max rows to subsample during optimisation (speeds up large N) | `5000` |
 | `speed` | `"fast"` mean-imputes missing data to score combinations via a Gram-matrix shortcut (reported statistics are always recomputed from the true data); `"conservative"` uses pairwise deletion throughout with no imputation | `"fast"` |
 
 ### Output
@@ -130,7 +130,7 @@ result <- reduceTo(
 | `generate` | Compute scores for best set | `TRUE` |
 | `cross.validate` | Enable train/holdout split | `FALSE` |
 | `method` | Ranking metric (binary: `"r"`, `"youden_j"`, `"binarised_r"`) | `NULL` |
-| `show.progress` | Show the live progress bar/speedometer and beam search updates | `TRUE` |
+| `show.progress` | Show the live progress bar/speedometer and optimisation-stage updates | `TRUE` |
 | `verbose` | Print informational messages (binary detection, optimisation triggers, prefilter/fast-path notices, etc.) -- set `FALSE` to silence these while keeping `show.progress`'s live updates | `TRUE` |
 
 ------------------------------------------------------------------------
@@ -196,13 +196,11 @@ predictions <- ifelse(scores >= 7, "Likely", "Unlikely")
 result <- reduceTo(
   data = item_bank_150,
   n.items = 10,
-  target = ability,
-  optimise = TRUE,
-  beam.width = 3000
+  target = ability
 )
 
-# Beam search identifies ~45 promising items
-# Exhaustive on C(45, 10) = 3.2M combinations
+# Progressive narrowing identifies the strongest ~45 items
+# Exhaustive search on C(45, 10) = 3.2M combinations
 # Total time: ~30 seconds
 ```
 

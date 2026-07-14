@@ -28,9 +28,13 @@
 #' @param show.progress If TRUE, displays a live progress bar during search (default: TRUE)
 #' @param cross.validate Numeric input controlling a data split into Training/Holdout
 #'   sets; if TRUE or 1, uses a 75%/25% split (default: FALSE)
-#' @param optimise Controls heuristic pruning for large item pools: TRUE (default)
-#'   automatically optimises if combinations exceed ceiling; FALSE forces exhaustive
-#'   search (can be slow)
+#' @param optimise Controls heuristic pruning for large item pools, used when
+#'   combinations exceed \code{ceiling}: \code{"progressive"} (default) exhaustively
+#'   scores small-k combinations and progressively narrows the item pool, keeping the
+#'   items with the best achieved score at each step; \code{"beam"} uses the original
+#'   beam search (grows candidate combinations, keeping the top \code{beam.width} at
+#'   each step); \code{"none"} forces exhaustive search regardless of \code{ceiling}
+#'   (can be slow)
 #' @param prefilter.ratio Drops items whose relevance (correlation with the target, or
 #'   item-total centrality with no target) is more than \code{prefilter.ratio} times
 #'   weaker than the strongest item, before optimisation runs. Never prunes below
@@ -91,11 +95,13 @@
 
 reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALSE, r.sq = FALSE,
                      generate = TRUE, item.set = 1, show.progress = T, cross.validate = 0,
-                     optimise = TRUE, prefilter.ratio = 5, beam.width = NULL, opt.n = 5000, ceiling = 1e8,
+                     optimise = c("progressive", "beam", "none"), prefilter.ratio = 5, beam.width = NULL,
+                     opt.n = 5000, ceiling = 1e7,
                      scale.vars = FALSE, na.rm = TRUE, method = NULL, speed = c("fast", "conservative"),
                      verbose = TRUE){
 
   speed <- match.arg(speed)
+  optimise <- match.arg(optimise)
 
   # Preserve the caller's random state (reduceTo() seeds its own sampling internally)
   if (exists(".Random.seed", envir = globalenv())) {
@@ -353,7 +359,120 @@ reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALS
     
     return(final_pool)
   }
-  
+
+  # Progressive-k pool narrowing: an alternative to beam search that
+  # exhaustively scores every combination at a small k, ranks items by their
+  # best achieved score, and drops the weakest before growing k -- avoiding
+  # both beam search's R-side expansion cost and its frequency-vote dilution
+  perform_progressive_narrowing <- function(current_cols, data, n.items, ceiling, targ, na.rm, opt.n, speed, show.progress) {
+
+    n_total <- nrow(data)
+    if (n_total > opt.n) {
+      set.seed(1)
+      sub_idx <- sample(seq_len(n_total), opt.n)
+      data <- data[sub_idx, , drop = FALSE]
+      targ <- targ[sub_idx]
+    }
+
+    used_gram <- identical(speed, "fast")
+
+    if (used_gram) {
+      gc_components <- build_gram_components(data, targ)
+      gram <- gc_components$gram
+      col_sums <- gc_components$col_sums
+      col_target_dots <- gc_components$col_target_dots
+      sum_target <- gc_components$sum_target
+      sum_target_sq <- gc_components$sum_target_sq
+      n_valid <- gc_components$n_valid
+    } else {
+      compressed_data <- compress_for_cpp(data)
+    }
+
+    ROUND_BUDGET <- 1000000  # bounds intermediate scoring cost only, not final pool size
+    RANK_KEEP_TOP <- 10000   # top combos used to rank items each round
+
+    pool <- current_cols
+    k <- min(2, n.items)
+    max_rounds <- n.items + 5  # safety cap; should converge in at most n.items-1 rounds
+    round_i <- 0
+
+    while (choose(length(pool), n.items) > ceiling && round_i < max_rounds) {
+      round_i <- round_i + 1
+      n_pool <- length(pool)
+
+      if (show.progress) {
+        cat(sprintf("\r~{ Progressive narrowing }~ scoring k = %d, pool = %d          ", k, n_pool))
+        flush.console()
+      }
+
+      # Score every combination at this round's k exhaustively. The pool
+      # entering this round was already narrowed (on the previous round) to
+      # keep THIS score cheap -- see the look-ahead narrowing below.
+      if (used_gram) {
+        cpp_result <- process_all_combinations_cpp_gram(
+          gram = gram[pool, pool, drop = FALSE],
+          col_sums = col_sums[pool],
+          col_target_dots = col_target_dots[pool],
+          sum_target = sum_target,
+          sum_target_sq = sum_target_sq,
+          n_valid = n_valid,
+          n_items = k,
+          num_choose_from = n_pool,
+          original_indices = pool,
+          keep_top = RANK_KEEP_TOP,
+          show_progress = FALSE
+        )
+      } else {
+        cpp_result <- process_all_combinations_cpp_parallel_float(
+          data = compressed_data[, pool, drop = FALSE],
+          n_items = k,
+          num_choose_from = n_pool,
+          na_rm = na.rm,
+          target = targ,
+          original_indices = pool,
+          keep_top = RANK_KEEP_TOP,
+          show_progress = FALSE
+        )
+      }
+
+      # Rank items by the best |r| among returned combinations containing
+      # them (not raw frequency -- this avoids beam search's dilution issue,
+      # where a common-but-mediocre item can outrank a rare-but-excellent one)
+      combo_indices_list <- lapply(strsplit(cpp_result$combination, ','), as.integer)
+      flat_items <- unlist(combo_indices_list)
+      flat_r <- rep(abs(cpp_result$r), lengths(combo_indices_list))
+      valid <- !is.na(flat_r)
+      item_best_flat <- tapply(flat_r[valid], flat_items[valid], max)
+
+      item_best <- setNames(rep(-Inf, n_pool), as.character(pool))
+      item_best[names(item_best_flat)] <- item_best_flat
+      ranked <- pool[order(item_best[as.character(pool)], decreasing = TRUE)]
+
+      # Look-ahead narrowing: shrink the pool now so that NEXT round's score
+      # (at next_k) stays within budget -- narrowing based on this round's
+      # own k would be too late, since this round's score already happened
+      # at the current (un-narrowed) pool size. When the next round is the
+      # real target k, narrow to `ceiling` directly (not ROUND_BUDGET) --
+      # ROUND_BUDGET only bounds the cost of intermediate scoring calls, it
+      # has no business capping the final pool below what the caller's own
+      # ceiling would otherwise allow.
+      next_k <- min(k + 1, n.items)
+      budget_for_next <- if (next_k >= n.items) ceiling else ROUND_BUDGET
+
+      target_pool_size <- n_pool
+      while (target_pool_size > n.items && choose(target_pool_size, next_k) > budget_for_next) {
+        target_pool_size <- target_pool_size - 1
+      }
+
+      pool <- ranked[1:target_pool_size]
+      k <- next_k
+    }
+
+    if (show.progress) cat("\n")
+
+    return(pool)
+  }
+
   compress_for_cpp <- function(data) {
     compressed <- matrix(0L, nrow = nrow(data), ncol = ncol(data))
     
@@ -837,7 +956,7 @@ reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALS
 
   if (num_combinations > ceiling) {
 
-    if (optimise) {
+    if (optimise != "none") {
 
       # Measure real combinations/sec on this machine to estimate runtime
       if (identical(speed, "fast")) {
@@ -883,9 +1002,9 @@ reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALS
       opt_est_seconds <- ceiling / combos_per_sec
 
       if (verbose) {
-        message(paste0("=~ Optimisation triggered: this dataset would generate ",
+        message(paste0("=~ This task would generate ",
                        format(num_combinations, big.mark = ",",scientific = FALSE),
-                       " combinations (~",format_duration(est_seconds), " to ",format_duration(est_seconds*5),
+                       " combinations to compare (~",format_duration(est_seconds), " to ",format_duration(est_seconds*5),
                        " with N = ",format(nrow(data), big.mark = ",",scientific = FALSE) ,
                        "). \n=~ Optimisation will be used to reduce combinations to below ",
                        format(ceiling, big.mark = ",",scientific = FALSE),
@@ -893,7 +1012,7 @@ reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALS
                        "). You can change this threshold with the 'ceiling' argument."))
       }
 
-      # Drop items far weaker than the strongest before beam search
+      # Drop items far weaker than the strongest before optimisation runs
       if (!is.null(prefilter.ratio) && is.finite(prefilter.ratio)) {
         item_relevance <- relevance[cols]
         keep_mask <- item_relevance >= (max(item_relevance, na.rm = TRUE) / prefilter.ratio)
@@ -903,27 +1022,31 @@ reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALS
           n_before <- length(cols)
           cols <- cols[keep_mask]
           if (length(cols) < n_before && verbose) {
-            message(sprintf("=~ Prefilter: keeping %d of %d items (relevance >= 1/%g of the strongest item) before beam search.",
+            message(sprintf("=~ Prefilter: keeping %d of %d items (relevance >= 1/%g of the strongest item) before optimisation.",
                             length(cols), n_before, prefilter.ratio))
           }
         }
       }
 
-      # Scale beam width to the item pool size (200-500), independent of `ceiling`.
-      # A wider beam isn't always better -- it can dilute which items get kept
-      # for the final search -- so this isn't a hard guarantee against every
-      # dataset; pass beam.width explicitly to override.
-      BEAM_WIDTH_BUDGET <- 60000
-      if (is.null(beam.width)) {
-        beam.width <- max(200, min(500, BEAM_WIDTH_BUDGET %/% max(length(cols), 1)))
-      }
-      beam_width_used <- beam.width
+      if (optimise == "beam") {
+        # Scale beam width to the item pool size (200-500), independent of `ceiling`.
+        # A wider beam isn't always better -- it can dilute which items get kept
+        # for the final search -- so this isn't a hard guarantee against every
+        # dataset; pass beam.width explicitly to override.
+        BEAM_WIDTH_BUDGET <- 60000
+        if (is.null(beam.width)) {
+          beam.width <- max(200, min(500, BEAM_WIDTH_BUDGET %/% max(length(cols), 1)))
+        }
+        beam_width_used <- beam.width
 
-      cols <- perform_optimization(cols, data, n.items, ceiling, target, na.rm, beam.width, opt.n, speed, show.progress)
+        cols <- perform_optimization(cols, data, n.items, ceiling, target, na.rm, beam.width, opt.n, speed, show.progress)
+      } else {
+        cols <- perform_progressive_narrowing(cols, data, n.items, ceiling, target, na.rm, opt.n, speed, show.progress)
+      }
 
     } else {
       if (verbose) {
-        message(sprintf("=~ Note: %s combinations exceeds ceiling (%s) but optimise = FALSE -- running exhaustive search anyway. This may be slow.",
+        message(sprintf("=~ Note: %s combinations exceeds ceiling (%s) but optimise = 'none' -- running exhaustive search anyway. This may be slow.",
                         format(num_combinations, big.mark = ",", scientific = FALSE),
                         format(ceiling, big.mark = ",", scientific = FALSE)))
       }
@@ -975,7 +1098,7 @@ reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALS
                                                  speed)
 
   if (isTRUE(cpp_results$imputed_for_search) && verbose) {
-    message("=~ Fast path: missing data detected, searched using mean-imputed values. All reported statistics are recomputed from the true data. Use speed = 'conservative' to disable.")
+    message("=~ Fast mode: initial search completed on Gram matrix with mean-imputation. All reported statistics are recomputed from the true data. Use speed = 'conservative' to disable.")
   }
 
   leaderboard <- cpp_results$leaderboard

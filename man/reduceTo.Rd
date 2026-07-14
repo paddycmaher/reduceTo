@@ -15,11 +15,11 @@ reduceTo(
   item.set = 1,
   show.progress = T,
   cross.validate = 0,
-  optimise = TRUE,
+  optimise = c("progressive", "beam", "none"),
   prefilter.ratio = 5,
   beam.width = NULL,
   opt.n = 5000,
-  ceiling = 1e+08,
+  ceiling = 1e+07,
   scale.vars = FALSE,
   na.rm = TRUE,
   method = NULL,
@@ -51,9 +51,13 @@ internal consistency, an unquoted column name from data, or an external vector
 \item{cross.validate}{Numeric input controlling a data split into Training/Holdout
 sets; if TRUE or 1, uses a 75\%/25\% split (default: FALSE)}
 
-\item{optimise}{Controls heuristic pruning for large item pools: TRUE (default)
-automatically optimises if combinations exceed ceiling; FALSE forces exhaustive
-search (can be slow)}
+\item{optimise}{Controls heuristic pruning for large item pools, used when
+combinations exceed \code{ceiling}: \code{"progressive"} (default) exhaustively
+scores small-k combinations and progressively narrows the item pool, keeping the
+items with the best achieved score at each step; \code{"beam"} uses the original
+beam search (grows candidate combinations, keeping the top \code{beam.width} at
+each step); \code{"none"} forces exhaustive search regardless of \code{ceiling}
+(can be slow)}
 
 \item{prefilter.ratio}{Drops items whose relevance (correlation with the target, or
 item-total centrality with no target) is more than \code{prefilter.ratio} times
