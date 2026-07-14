@@ -9,15 +9,3 @@ process_all_combinations_cpp_gram <- function(gram, col_sums, col_target_dots, s
     .Call(`_reduceTo_process_all_combinations_cpp_gram`, gram, col_sums, col_target_dots, sum_target, sum_target_sq, n_valid, n_items, num_choose_from, original_indices, keep_top, show_progress)
 }
 
-compress_matrix_cpp <- function(data) {
-    .Call(`_reduceTo_compress_matrix_cpp`, data)
-}
-
-evaluate_beam_cpp <- function(packed_data, combinations, target, na_rm) {
-    .Call(`_reduceTo_evaluate_beam_cpp`, packed_data, combinations, target, na_rm)
-}
-
-evaluate_beam_cpp_gram <- function(gram, col_sums, col_target_dots, sum_target, sum_target_sq, n_valid, combinations) {
-    .Call(`_reduceTo_evaluate_beam_cpp_gram`, gram, col_sums, col_target_dots, sum_target, sum_target_sq, n_valid, combinations)
-}
-

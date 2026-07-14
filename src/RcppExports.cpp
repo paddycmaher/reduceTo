@@ -49,55 +49,10 @@ BEGIN_RCPP
     return rcpp_result_gen;
 END_RCPP
 }
-// compress_matrix_cpp
-RawVector compress_matrix_cpp(IntegerMatrix data);
-RcppExport SEXP _reduceTo_compress_matrix_cpp(SEXP dataSEXP) {
-BEGIN_RCPP
-    Rcpp::RObject rcpp_result_gen;
-    Rcpp::RNGScope rcpp_rngScope_gen;
-    Rcpp::traits::input_parameter< IntegerMatrix >::type data(dataSEXP);
-    rcpp_result_gen = Rcpp::wrap(compress_matrix_cpp(data));
-    return rcpp_result_gen;
-END_RCPP
-}
-// evaluate_beam_cpp
-NumericVector evaluate_beam_cpp(RawVector packed_data, IntegerMatrix combinations, NumericVector target, bool na_rm);
-RcppExport SEXP _reduceTo_evaluate_beam_cpp(SEXP packed_dataSEXP, SEXP combinationsSEXP, SEXP targetSEXP, SEXP na_rmSEXP) {
-BEGIN_RCPP
-    Rcpp::RObject rcpp_result_gen;
-    Rcpp::RNGScope rcpp_rngScope_gen;
-    Rcpp::traits::input_parameter< RawVector >::type packed_data(packed_dataSEXP);
-    Rcpp::traits::input_parameter< IntegerMatrix >::type combinations(combinationsSEXP);
-    Rcpp::traits::input_parameter< NumericVector >::type target(targetSEXP);
-    Rcpp::traits::input_parameter< bool >::type na_rm(na_rmSEXP);
-    rcpp_result_gen = Rcpp::wrap(evaluate_beam_cpp(packed_data, combinations, target, na_rm));
-    return rcpp_result_gen;
-END_RCPP
-}
-// evaluate_beam_cpp_gram
-NumericVector evaluate_beam_cpp_gram(NumericMatrix gram, NumericVector col_sums, NumericVector col_target_dots, double sum_target, double sum_target_sq, double n_valid, IntegerMatrix combinations);
-RcppExport SEXP _reduceTo_evaluate_beam_cpp_gram(SEXP gramSEXP, SEXP col_sumsSEXP, SEXP col_target_dotsSEXP, SEXP sum_targetSEXP, SEXP sum_target_sqSEXP, SEXP n_validSEXP, SEXP combinationsSEXP) {
-BEGIN_RCPP
-    Rcpp::RObject rcpp_result_gen;
-    Rcpp::RNGScope rcpp_rngScope_gen;
-    Rcpp::traits::input_parameter< NumericMatrix >::type gram(gramSEXP);
-    Rcpp::traits::input_parameter< NumericVector >::type col_sums(col_sumsSEXP);
-    Rcpp::traits::input_parameter< NumericVector >::type col_target_dots(col_target_dotsSEXP);
-    Rcpp::traits::input_parameter< double >::type sum_target(sum_targetSEXP);
-    Rcpp::traits::input_parameter< double >::type sum_target_sq(sum_target_sqSEXP);
-    Rcpp::traits::input_parameter< double >::type n_valid(n_validSEXP);
-    Rcpp::traits::input_parameter< IntegerMatrix >::type combinations(combinationsSEXP);
-    rcpp_result_gen = Rcpp::wrap(evaluate_beam_cpp_gram(gram, col_sums, col_target_dots, sum_target, sum_target_sq, n_valid, combinations));
-    return rcpp_result_gen;
-END_RCPP
-}
 
 static const R_CallMethodDef CallEntries[] = {
     {"_reduceTo_process_all_combinations_cpp_parallel_float", (DL_FUNC) &_reduceTo_process_all_combinations_cpp_parallel_float, 8},
     {"_reduceTo_process_all_combinations_cpp_gram", (DL_FUNC) &_reduceTo_process_all_combinations_cpp_gram, 11},
-    {"_reduceTo_compress_matrix_cpp", (DL_FUNC) &_reduceTo_compress_matrix_cpp, 1},
-    {"_reduceTo_evaluate_beam_cpp", (DL_FUNC) &_reduceTo_evaluate_beam_cpp, 4},
-    {"_reduceTo_evaluate_beam_cpp_gram", (DL_FUNC) &_reduceTo_evaluate_beam_cpp_gram, 7},
     {NULL, NULL, 0}
 };
 

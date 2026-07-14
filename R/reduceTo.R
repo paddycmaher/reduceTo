@@ -10,7 +10,7 @@
 #' \strong{Key Features:}
 #' \itemize{
 #'   \item \strong{Combinatorial Search}: Exhaustively scores item subsets to guarantee finding the best-performing item set within the search space.
-#'   \item \strong{Heuristic Optimisation}: When the number of combinations exceeds the computational ceiling, the function automatically reduces the item pool through a beam search before searching.
+#'   \item \strong{Heuristic Optimisation}: When the number of combinations exceeds the computational ceiling, the function automatically reduces the item pool through progressive-k narrowing before searching.
 #'   \item \strong{Cross-Validation}: Supports a Train/Holdout split (default 75/25) to validate findings and prevent overfitting. Reports performance metrics for both the training and holdout samples side-by-side.
 #'   \item \strong{Binary Classifications}: For binary targets (0/1), automatically finds the optimal integer cut-off score to maximise classification accuracy (Youden's J) or binarised correlation. AUC (threshold-independent) is also reported.
 #' }
@@ -31,26 +31,20 @@
 #' @param optimise Controls heuristic pruning for large item pools, used when
 #'   combinations exceed \code{ceiling}: \code{"progressive"} (default) exhaustively
 #'   scores small-k combinations and progressively narrows the item pool, keeping the
-#'   items with the best achieved score at each step; \code{"beam"} uses the original
-#'   beam search (grows candidate combinations, keeping the top \code{beam.width} at
-#'   each step); \code{"none"} forces exhaustive search regardless of \code{ceiling}
-#'   (can be slow)
+#'   items with the best achieved score at each step; \code{"none"} forces exhaustive
+#'   search regardless of \code{ceiling} (can be slow)
 #' @param prefilter.ratio Drops items whose relevance (correlation with the target, or
 #'   item-total centrality with no target) is more than \code{prefilter.ratio} times
 #'   weaker than the strongest item, before optimisation runs. Never prunes below
 #'   \code{n.items} columns. Set to \code{Inf} or \code{NULL} to disable (default: 5)
-#' @param beam.width Number of top-performing subsets kept at each expansion stage
-#'   during optimisation. Default \code{NULL} scales it to the item pool size (200-500).
-#'   Increase this if your items include weak or opposite-signed items that only
-#'   predict well when combined
-#' @param opt.n The maximum number of cases (rows) to subsample during the heuristic
-#'   beam search (default: 5000)
+#' @param opt.n The maximum number of cases (rows) to subsample during heuristic
+#'   optimisation (default: 5000)
 #' @param ceiling Combination threshold triggering optimisation (default: 10,000,000).
 #'   A tighter ceiling narrows the item pool further before the final exhaustive search,
-#'   which is faster but leaves less room to recover from an imperfect ranking -- this
-#'   matters most for items whose value only appears when combined with several specific
-#'   others (see \code{optimise}); a more generous ceiling reduces that risk under either
-#'   \code{optimise} method
+#'   which is faster but leaves less room to recover from an imperfect ranking. In
+#'   testing, \code{optimise = "progressive"} reliably found the true optimum except in
+#'   extreme scenarios -- e.g. items whose value is invisible until combined with several
+#'   (3+) specific others; a more generous ceiling protects against this rare case
 #' @param scale.vars If TRUE, mean-centers and scales all columns (default: FALSE)
 #' @param na.rm If TRUE, handles missing values via pairwise deletion (default: TRUE)
 #' @param method Metric for ranking combinations (default: NULL for auto-selection):
@@ -61,7 +55,7 @@
 #'   always recomputed from the true data. \code{"conservative"} scores every
 #'   combination directly with pairwise deletion: no imputation, but slower
 #' @param verbose If TRUE, prints informational messages (default: TRUE). Progress
-#'   bars and beam search updates are controlled separately by \code{show.progress}
+#'   bars and optimisation-stage updates are controlled separately by \code{show.progress}
 #'
 #' @return A list of class \code{reduced_scale} containing:
 #' \describe{
@@ -71,8 +65,7 @@
 #'   \item{best_indices}{Integer vector of column indices in the top-ranked set}
 #'   \item{scores}{(If generate = TRUE) A data frame containing the sum scores}
 #'   \item{binary_info}{(If binary target) A list containing optimal cutoffs and classification metrics}
-#'   \item{params}{Named vector of parameters used in the function call, including
-#'     the beam width actually used (NA if optimisation wasn't triggered)}
+#'   \item{params}{Named vector of parameters used in the function call}
 #' }
 #'
 #' @author Paddy Maher, Max Planck Institute for Human Development, MPRG Biosocial
@@ -100,7 +93,7 @@
 
 reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALSE, r.sq = FALSE,
                      generate = TRUE, item.set = 1, show.progress = T, cross.validate = 0,
-                     optimise = c("progressive", "beam", "none"), prefilter.ratio = 5, beam.width = NULL,
+                     optimise = c("progressive", "none"), prefilter.ratio = 5,
                      opt.n = 5000, ceiling = 1e7,
                      scale.vars = FALSE, na.rm = TRUE, method = NULL, speed = c("fast", "conservative"),
                      verbose = TRUE){
@@ -264,111 +257,10 @@ reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALS
     )
   }
 
-  perform_optimization <- function(current_cols, data, n.items, ceiling, targ, na.rm, beam_width, opt.n, speed, show.progress) {
-
-    # --- SUBSAMPLING ---
-    n_total <- nrow(data)
-    if (n_total > opt.n) {
-      set.seed(1)
-      sub_idx <- sample(seq_len(n_total), opt.n)
-      data <- data[sub_idx, , drop = FALSE]
-      targ <- targ[sub_idx]
-    }
-
-    used_gram_beam <- identical(speed, "fast")
-
-    if (used_gram_beam) {
-      # Precompute the Gram-matrix moments once, before the beam loop
-      gc_components <- build_gram_components(data, targ)
-      gram <- gc_components$gram
-      col_sums <- gc_components$col_sums
-      col_target_dots <- gc_components$col_target_dots
-      sum_target <- gc_components$sum_target
-      sum_target_sq <- gc_components$sum_target_sq
-      n_valid <- gc_components$n_valid
-    } else {
-      # Compress once, reused across every beam iteration
-      packed_data <- compress_matrix_cpp(compress_for_cpp(data))
-    }
-
-    k <- min(3, n.items)
-    pool_indices <- current_cols
-    current_combos <- t(combn(pool_indices, k))
-
-    while (k <= n.items) {
-
-      if (show.progress) {
-        if (k %% 2 == 0) {
-          cat(sprintf("\r~{ Beam search }~ =~= Evaluating subsets: %d of %d items", k, n.items))
-          flush.console()
-        } else {
-          cat(sprintf("\r~{ Beam search }~ =+= Evaluating subsets: %d of %d items", k, n.items))
-          flush.console()
-        }
-      }
-
-      # 1. Evaluate current combinations via C++
-      scores <- if (used_gram_beam) {
-        evaluate_beam_cpp_gram(gram, col_sums, col_target_dots, sum_target,
-                               sum_target_sq, n_valid, current_combos)
-      } else {
-        evaluate_beam_cpp(packed_data, current_combos, targ, na.rm)
-      }
-
-      # 2. Rank and slice the top B combinations
-      n_to_keep <- min(beam_width, nrow(current_combos))
-      top_indices <- order(abs(scores), decreasing = TRUE)[1:n_to_keep]
-      top_combos <- current_combos[top_indices, , drop = FALSE]
-
-      if (k == n.items) break
-
-      # 3. Expand the beam
-      n_top <- nrow(top_combos)
-      n_pool <- length(pool_indices)
-
-      expanded <- top_combos[rep(1:n_top, each = n_pool), , drop = FALSE]
-      new_items <- rep(pool_indices, times = n_top)
-      expanded <- cbind(expanded, new_items)
-
-      # 4. Fast duplicate check
-      duplicate_mask <- rowSums(expanded[, 1:k, drop = FALSE] == new_items) > 0
-      expanded <- expanded[!duplicate_mask, , drop = FALSE]
-
-      # 5. Fully vectorized row sort (orders by row index first, then value)
-      expanded <- matrix(
-        expanded[order(row(expanded), expanded)],
-        ncol = ncol(expanded),
-        byrow = TRUE
-      )
-
-      # 6. Keep only unique combination paths
-      current_combos <- unique(expanded)
-
-      k <- k + 1
-    }
-    
-    # --- FEATURE IMPORTANCE EXTRACTION ---
-    item_frequencies <- table(top_combos)
-    sorted_items <- as.numeric(names(sort(item_frequencies, decreasing = TRUE)))
-    
-    # --- GREEDY ASSEMBLY ---
-    ranked_pool <- unique(c(sorted_items, pool_indices))
-    final_pool <- ranked_pool[1:n.items] 
-    
-    for (i in (n.items + 1):length(ranked_pool)) {
-      if (choose(i, n.items) > ceiling) {
-        break
-      }
-      final_pool <- ranked_pool[1:i]
-    }
-    
-    return(final_pool)
-  }
-
-  # Progressive-k pool narrowing: an alternative to beam search that
-  # exhaustively scores every combination at a small k, ranks items by their
-  # best achieved score, and drops the weakest before growing k -- avoiding
-  # both beam search's R-side expansion cost and its frequency-vote dilution
+  # Progressive-k pool narrowing: exhaustively scores every combination at a
+  # small k, ranks items by their best achieved score, and drops the weakest
+  # before growing k -- until the pool is small enough for a final exhaustive
+  # search
   perform_progressive_narrowing <- function(current_cols, data, n.items, ceiling, targ, na.rm, opt.n, speed, show.progress) {
 
     n_total <- nrow(data)
@@ -393,7 +285,7 @@ reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALS
       compressed_data <- compress_for_cpp(data)
     }
 
-    ROUND_BUDGET <- 1000000  # bounds intermediate scoring cost only, not final pool size
+    ROUND_BUDGET <- 1000000  # bounds intermediate scoring cost only, not final pool size (tuned empirically against recovery-rate tests, not a formula)
     RANK_KEEP_TOP <- 10000   # top combos used to rank items each round
 
     pool <- current_cols
@@ -441,8 +333,8 @@ reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALS
       }
 
       # Rank items by the best |r| among returned combinations containing
-      # them (not raw frequency -- this avoids beam search's dilution issue,
-      # where a common-but-mediocre item can outrank a rare-but-excellent one)
+      # them, not raw frequency (a common-but-mediocre item shouldn't
+      # outrank a rare-but-excellent one)
       combo_indices_list <- lapply(strsplit(cpp_result$combination, ','), as.integer)
       flat_items <- unlist(combo_indices_list)
       flat_r <- rep(abs(cpp_result$r), lengths(combo_indices_list))
@@ -957,7 +849,6 @@ reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALS
   
   # Check if optimization is needed
   num_combinations <- choose(ncol(data), n.items)
-  beam_width_used <- NA
 
   if (num_combinations > ceiling) {
 
@@ -994,13 +885,24 @@ reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALS
         combos_per_sec <- calib_combos / max(as.numeric(difftime(Sys.time(), t_calib, units = "secs")), 1e-6)
 
       } else {
-        # Row-scan cost depends on the data, so sample real combinations
-        calibration_n <- min(20000, num_combinations)
-        calibration_combos <- matrix(sample(cols, calibration_n * n.items, replace = TRUE), ncol = n.items)
-        calibration_packed <- compress_matrix_cpp(compress_for_cpp(data))
+        # Row-scan cost is ~O(n_rows * n.items) per combination regardless of
+        # which items, so a small stand-in pool gives a representative rate
+        calib_pool_size <- min(ncol(data), n.items + 10)
+        calib_compressed <- compress_for_cpp(data[, 1:calib_pool_size, drop = FALSE])
+
         t_calib <- Sys.time()
-        invisible(evaluate_beam_cpp(calibration_packed, calibration_combos, target, na.rm))
-        combos_per_sec <- calibration_n / max(as.numeric(difftime(Sys.time(), t_calib, units = "secs")), 1e-6)
+        invisible(process_all_combinations_cpp_parallel_float(
+          data = calib_compressed,
+          n_items = n.items,
+          num_choose_from = calib_pool_size,
+          na_rm = na.rm,
+          target = target,
+          original_indices = 1:calib_pool_size,
+          keep_top = 1,
+          show_progress = FALSE
+        ))
+        calib_combos <- choose(calib_pool_size, n.items)
+        combos_per_sec <- calib_combos / max(as.numeric(difftime(Sys.time(), t_calib, units = "secs")), 1e-6)
       }
 
       est_seconds <- num_combinations / combos_per_sec
@@ -1033,21 +935,7 @@ reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALS
         }
       }
 
-      if (optimise == "beam") {
-        # Scale beam width to the item pool size (200-500), independent of `ceiling`.
-        # A wider beam isn't always better -- it can dilute which items get kept
-        # for the final search -- so this isn't a hard guarantee against every
-        # dataset; pass beam.width explicitly to override.
-        BEAM_WIDTH_BUDGET <- 60000
-        if (is.null(beam.width)) {
-          beam.width <- max(200, min(500, BEAM_WIDTH_BUDGET %/% max(length(cols), 1)))
-        }
-        beam_width_used <- beam.width
-
-        cols <- perform_optimization(cols, data, n.items, ceiling, target, na.rm, beam.width, opt.n, speed, show.progress)
-      } else {
-        cols <- perform_progressive_narrowing(cols, data, n.items, ceiling, target, na.rm, opt.n, speed, show.progress)
-      }
+      cols <- perform_progressive_narrowing(cols, data, n.items, ceiling, target, na.rm, opt.n, speed, show.progress)
 
     } else {
       if (verbose) {
@@ -1247,8 +1135,7 @@ reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALS
       cross.validated = cross.validate,
       ranking_metric = ranking_metric,
       sample_size = nrow(data),
-      final_pool_size = num_choose_from,
-      beam.width = beam_width_used
+      final_pool_size = num_choose_from
     )
   )
   

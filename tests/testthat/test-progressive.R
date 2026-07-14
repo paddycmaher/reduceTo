@@ -83,12 +83,10 @@ test_that("progressive narrowing recovers a synergistic/suppressor item set", {
   expect_true(n_xy >= 4)
 })
 
-test_that("a higher-order (3-group) suppressor structure needs a generous ceiling to recover -- known limitation, not specific to progressive narrowing", {
+test_that("a higher-order (3-group) suppressor structure needs a generous ceiling to recover", {
   # A/B/C carry -Wa, -Wb, and +Wa+Wb respectively -- no PAIR of groups fully
   # cancels the bias, only a genuine A+B+C combination does. A tight ceiling
-  # (small final pool) leaves no margin to survive an imperfect early ranking;
-  # this is a shared limitation of beam search too (verified separately), not
-  # a progressive-narrowing-specific regression.
+  # (small final pool) leaves no margin to survive an imperfect early ranking.
   set.seed(4013)
   n <- 2000
   Z1 <- rnorm(n); Z2 <- rnorm(n); Z3 <- rnorm(n)

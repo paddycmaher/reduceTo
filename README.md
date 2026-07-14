@@ -1,6 +1,6 @@
 # reduceTo: High-Performance Combinatorial Scale Optimisation
 
-**Find the optimal subset of items from larger scales through a Gram-matrix-accelerated exhaustive search, with heuristic beam-search narrowing for very large item pools.**
+**Find the optimal subset of items from larger scales through a Gram-matrix-accelerated exhaustive search, with progressive-k narrowing for very large item pools.**
 
 An R package for psychometric scale reduction that finds the best-performing item combinations within its search space, with a memory-optimised C++ backend.
 
@@ -14,7 +14,7 @@ An R package for psychometric scale reduction that finds the best-performing ite
 
 -   **Exhaustive**: Scores every combination within the designated search space to find the optimal item set
 -   **Rapid**: Parallelised C++ backend that scores combinations from precomputed column moments (a Gram matrix)
--   **Scales Smartly**: Automatic hybrid beam search for very large, intractable item pools (100+ items)
+-   **Scales Smartly**: Automatic progressive-k narrowing for very large, intractable item pools (100+ items)
 -   **Robust**: Unit-weighting helps prevent overfitting, and represents real-world sum-score usage
 -   **Production-Ready**: Built-in cross-validation option, progress tracking, robust error handling
 
@@ -78,14 +78,14 @@ result <- reduceTo(data, n.items = 6, target = diagnosis)
 
 ### Intelligent Optimisation for Large Pools
 
-When exhaustive search becomes intractable, reduceTo narrows the search area first, before moving to **exhaustive search**. By default this uses **progressive-k narrowing**: exhaustively scores every combination at a small k, keeps the best-performing items, then grows k and repeats against the shrinking pool -- cheap because of the Gram-matrix shortcut, and it never discards a combination without actually scoring it. The original **beam search** (grow candidate combinations, keep the top `beam.width` at each stage) is still available via `optimise = "beam"`.
+When exhaustive search becomes intractable, reduceTo narrows the search area first, before moving to **exhaustive search**, using **progressive-k narrowing**: exhaustively scores every combination at a small k, keeps the best-performing items, then grows k and repeats against the shrinking pool -- cheap because of the Gram-matrix shortcut, and it never discards a combination without actually scoring it.
 
 ``` r
 # Choose 10 from 200 items (2.5 trillion combinations)
 result <- reduceTo(data = large_item_bank, n.items = 10)
 ```
 
-**Process (`optimise = "progressive"`, default):** 1. Prefilter: drops items far weaker than the strongest by relevance 2. Progressive narrowing: exhaustively scores combinations at k = 2, 3, ... , ranking items by their best achieved score and dropping the weakest, until the remaining pool is small enough 3. Exhaustive search: guarantees optimum within the refined pool
+**Process:** 1. Prefilter: drops items far weaker than the strongest by relevance 2. Progressive narrowing: exhaustively scores combinations at k = 2, 3, ... , ranking items by their best achieved score and dropping the weakest, until the remaining pool is small enough 3. Exhaustive search: guarantees optimum within the refined pool
 
 ### Cross-Validation
 
@@ -115,9 +115,8 @@ result <- reduceTo(
 
 | Parameter | Description | Default |
 |--------------|---------------------------------------------|--------------|
-| `optimise` | Heuristic pruning for large item pools: `"progressive"` narrows the item pool via exhaustive small-k scoring, `"beam"` uses the original beam search, `"none"` forces exhaustive search regardless of `ceiling` | `"progressive"` |
+| `optimise` | Heuristic pruning for large item pools: `"progressive"` narrows the item pool via exhaustive small-k scoring, `"none"` forces exhaustive search regardless of `ceiling` | `"progressive"` |
 | `prefilter.ratio` | Before optimisation runs, drop items whose relevance is more than this many times weaker than the strongest item (set `Inf`/`NULL` to disable) | `5` |
-| `beam.width` | (`optimise = "beam"` only) Top combinations kept per stage; `NULL` scales it to pool size automatically (200-500, independent of `ceiling`) | `NULL` |
 | `ceiling` | Combination threshold for optimisation | `10,000,000` |
 | `opt.n` | Max rows to subsample during optimisation (speeds up large N) | `5000` |
 | `speed` | `"fast"` mean-imputes missing data to score combinations via a Gram-matrix shortcut (reported statistics are always recomputed from the true data); `"conservative"` uses pairwise deletion throughout with no imputation | `"fast"` |
@@ -208,7 +207,7 @@ result <- reduceTo(
 
 ### Gram-Matrix Engine vs. Row-Scan (isolated scoring speed)
 
-Measured on a massive dataset (300 items, N = 300,000), scoring all C(300, 3) = 4,455,100 combinations directly against a continuous target -- the same precomputed input fed to each engine, isolating the scoring step itself from beam search or other R-side overhead:
+Measured on a massive dataset (300 items, N = 300,000), scoring all C(300, 3) = 4,455,100 combinations directly against a continuous target -- the same precomputed input fed to each engine, isolating the scoring step itself from pool-narrowing or other R-side overhead:
 
 | Engine | Combinations/sec | Time for 4.45M combinations |
 |--------------------------------------|----------------|------------------|
@@ -216,22 +215,22 @@ Measured on a massive dataset (300 items, N = 300,000), scoring all C(300, 3) = 
 | Current, `speed = "conservative"` (same row-scan algorithm) | \~9,190/s | \~8.1 min |
 | Current, `speed = "fast"` (Gram matrix) | 100M+/s | \~0.28s (incl. one-time Gram precompute) |
 
-**\~1,800x faster** than the archived row-scan engine for this case. This is close to the ceiling case for the Gram matrix approach (small `n.items`, large N, since row-scan cost scales with N per combination while the Gram engine's is O(n.items\^2) regardless of N); real end-to-end runs below see smaller, but still large, gains once beam search and R-side overhead are included.
+**\~1,800x faster** than the archived row-scan engine for this case. This is close to the ceiling case for the Gram matrix approach (small `n.items`, large N, since row-scan cost scales with N per combination while the Gram engine's is O(n.items\^2) regardless of N); real end-to-end runs below see smaller, but still large, gains once pool narrowing and R-side overhead are included.
 
 ### reduceTo() vs. Plain R
 
-As a comparison, the "Base R Only" column below estimates the best case scenario for base-R implementation (a vectorised per-combination `rowMeans()` + `cor()` loop -- no Rcpp, no compression, no Gram matrix, no beam search), throughput-measured on a real sample of combinations and extrapolated to the full combination count. Measured on real data, the IPIP-NEO Neuroticism scale (60 items, N = 5,000):
+As a comparison, the "Base R Only" column below estimates the best case scenario for base-R implementation (a vectorised per-combination `rowMeans()` + `cor()` loop -- no Rcpp, no compression, no Gram matrix, no pool narrowing), throughput-measured on a real sample of combinations and extrapolated to the full combination count. Measured on real data, the IPIP-NEO Neuroticism scale (60 items, N = 5,000):
 
 | Selecting | Combinations   | Base R Only  | reduceTo() (default settings) |
 |-----------|----------------|--------------|-------------------------------|
 | 3 of 60   | 34,220         | \~2.4 sec    | 0.03s                         |
 | 5 of 60   | 5,461,512      | \~8.2 min    | 0.06s                         |
-| 8 of 60   | 2,558,620,845  | \~3.7 days   | 0.97s (beam search triggers)  |
-| 10 of 60  | 75,394,027,566 | \~4.2 months | 1.22s (beam search triggers)  |
+| 8 of 60   | 2,558,620,845  | \~3.7 days   | 0.97s (optimisation triggers) |
+| 10 of 60  | 75,394,027,566 | \~4.2 months | 1.22s (optimisation triggers) |
 
-`reduceTo()`'s C++ backend, Gram-matrix scoring, and (for pools too large to enumerate directly) beam search combine to turn a months-long base-R search into just over a second.
+`reduceTo()`'s C++ backend, Gram-matrix scoring, and (for pools too large to enumerate directly) progressive-k narrowing combine to turn a months-long base-R search into just over a second.
 
-Your mileage will vary with your hardware and sample size; `reduceTo()` prints a calibrated estimate for your own machine and dataset before falling back to beam search.
+Your mileage will vary with your hardware and sample size; `reduceTo()` prints a calibrated estimate for your own machine and dataset before narrowing the item pool.
 
 ## Methodological Notes
 
@@ -240,6 +239,10 @@ Your mileage will vary with your hardware and sample size; `reduceTo()` prints a
 -   Review top 5-10 solutions, not just #1 - similar performance allows choosing more theoretically valid items
 -   Garbage in, garbage out. Please, please ensure your parent scale is valid before shortening it
 -   Use cross-validation for small samples (N \< 500)
+
+### Heuristic Optimisation Reliability
+
+Tested against real data and adversarial synthetic structures (200M+ combinations each) crossing several item-quality patterns. In testing, this heuristic approach only failed to find the true optimum in extreme scenarios, such as an item whose value is invisible unless combined with several (3+) other specific items -- and even then, a more generous `ceiling` reliably recovered it. Ordinary item structures (including simple weak/opposite-signed pairs) recovered the true optimum every time tested, across a wide range of `ceiling` settings.
 
 ### Binary Targets
 

@@ -15,9 +15,8 @@ reduceTo(
   item.set = 1,
   show.progress = T,
   cross.validate = 0,
-  optimise = c("progressive", "beam", "none"),
+  optimise = c("progressive", "none"),
   prefilter.ratio = 5,
-  beam.width = NULL,
   opt.n = 5000,
   ceiling = 1e+07,
   scale.vars = FALSE,
@@ -54,30 +53,23 @@ sets; if TRUE or 1, uses a 75\%/25\% split (default: FALSE)}
 \item{optimise}{Controls heuristic pruning for large item pools, used when
 combinations exceed \code{ceiling}: \code{"progressive"} (default) exhaustively
 scores small-k combinations and progressively narrows the item pool, keeping the
-items with the best achieved score at each step; \code{"beam"} uses the original
-beam search (grows candidate combinations, keeping the top \code{beam.width} at
-each step); \code{"none"} forces exhaustive search regardless of \code{ceiling}
-(can be slow)}
+items with the best achieved score at each step; \code{"none"} forces exhaustive
+search regardless of \code{ceiling} (can be slow)}
 
 \item{prefilter.ratio}{Drops items whose relevance (correlation with the target, or
 item-total centrality with no target) is more than \code{prefilter.ratio} times
 weaker than the strongest item, before optimisation runs. Never prunes below
 \code{n.items} columns. Set to \code{Inf} or \code{NULL} to disable (default: 5)}
 
-\item{beam.width}{Number of top-performing subsets kept at each expansion stage
-during optimisation. Default \code{NULL} scales it to the item pool size (200-500).
-Increase this if your items include weak or opposite-signed items that only
-predict well when combined}
-
-\item{opt.n}{The maximum number of cases (rows) to subsample during the heuristic
-beam search (default: 5000)}
+\item{opt.n}{The maximum number of cases (rows) to subsample during heuristic
+optimisation (default: 5000)}
 
 \item{ceiling}{Combination threshold triggering optimisation (default: 10,000,000).
 A tighter ceiling narrows the item pool further before the final exhaustive search,
-which is faster but leaves less room to recover from an imperfect ranking -- this
-matters most for items whose value only appears when combined with several specific
-others (see \code{optimise}); a more generous ceiling reduces that risk under either
-\code{optimise} method}
+which is faster but leaves less room to recover from an imperfect ranking. In
+testing, \code{optimise = "progressive"} reliably found the true optimum except in
+extreme scenarios -- e.g. items whose value is invisible until combined with several
+(3+) specific others; a more generous ceiling protects against this rare case}
 
 \item{scale.vars}{If TRUE, mean-centers and scales all columns (default: FALSE)}
 
@@ -93,7 +85,7 @@ always recomputed from the true data. \code{"conservative"} scores every
 combination directly with pairwise deletion: no imputation, but slower}
 
 \item{verbose}{If TRUE, prints informational messages (default: TRUE). Progress
-bars and beam search updates are controlled separately by \code{show.progress}}
+bars and optimisation-stage updates are controlled separately by \code{show.progress}}
 }
 \value{
 A list of class \code{reduced_scale} containing:
@@ -104,8 +96,7 @@ A list of class \code{reduced_scale} containing:
 \item{best_indices}{Integer vector of column indices in the top-ranked set}
 \item{scores}{(If generate = TRUE) A data frame containing the sum scores}
 \item{binary_info}{(If binary target) A list containing optimal cutoffs and classification metrics}
-\item{params}{Named vector of parameters used in the function call, including
-the beam width actually used (NA if optimisation wasn't triggered)}
+\item{params}{Named vector of parameters used in the function call}
 }
 }
 \description{
@@ -119,7 +110,7 @@ combinations in seconds.
 \strong{Key Features:}
 \itemize{
 \item \strong{Combinatorial Search}: Exhaustively scores item subsets to guarantee finding the best-performing item set within the search space.
-\item \strong{Heuristic Optimisation}: When the number of combinations exceeds the computational ceiling, the function automatically reduces the item pool through a beam search before searching.
+\item \strong{Heuristic Optimisation}: When the number of combinations exceeds the computational ceiling, the function automatically reduces the item pool through progressive-k narrowing before searching.
 \item \strong{Cross-Validation}: Supports a Train/Holdout split (default 75/25) to validate findings and prevent overfitting. Reports performance metrics for both the training and holdout samples side-by-side.
 \item \strong{Binary Classifications}: For binary targets (0/1), automatically finds the optimal integer cut-off score to maximise classification accuracy (Youden's J) or binarised correlation. AUC (threshold-independent) is also reported.
 }

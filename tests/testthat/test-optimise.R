@@ -10,17 +10,6 @@ test_that("optimise = 'none' forces exhaustive search, matching unconstrained ex
   expect_equal(r_forced$best_names, r_unconstrained$best_names)
 })
 
-test_that("optimise = 'beam' triggers beam search when combinations exceed ceiling", {
-  set.seed(1)
-  data <- as.data.frame(matrix(rnorm(200 * 10), ncol = 10))
-  colnames(data) <- paste0("Item_", 1:10)
-
-  expect_message(
-    reduceTo(data, n.items = 4, ceiling = 5, optimise = "beam", show.progress = FALSE),
-    "This task would generate"
-  )
-})
-
 test_that("optimise = 'progressive' (default) triggers optimisation when combinations exceed ceiling", {
   set.seed(1)
   data <- as.data.frame(matrix(rnorm(200 * 10), ncol = 10))
