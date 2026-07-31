@@ -346,7 +346,7 @@ reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALS
       n_pool <- length(pool)
 
       if (show.progress) {
-        msg <- sprintf("~{ Synergistic RFE }~ scoring k = %d, pool = %d", k, n_pool)
+        msg <- sprintf("~{ Synergistic RFE }~ scoring at k = %d, new pool = %d", k, n_pool)
         if (nchar(msg) > prog_width) msg <- substr(msg, 1, prog_width)
         cat("\r", formatC(msg, width = -prog_width), sep = "")
         flush.console()
@@ -1036,10 +1036,11 @@ reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALS
                        format(num_combinations, big.mark = ",",scientific = FALSE),
                        " combinations to compare (~",format_duration_range(est_seconds, est_seconds*5),
                        " with N = ",format(nrow(data), big.mark = ",",scientific = FALSE) ,
-                       "). \n=~ Optimisation will be used to reduce combinations to below ",
+                       "). \n=~ Combinations will be reduced to below ",
                        format(ceiling, big.mark = ",",scientific = FALSE),
                        " (~",format_duration_range(opt_est_seconds, opt_est_seconds*5),
-                       "). You can change this threshold with the 'ceiling' argument."))
+                       " to compare) with Synergistic RFE.",
+                       " You can change this threshold with the 'ceiling' argument."))
         if (!is.null(prefilter_message)) message(prefilter_message)
       }
 

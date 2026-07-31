@@ -219,59 +219,115 @@ std::string format_time(double seconds) {
 // ============================================================================
 //  EXACT PARALLEL TOP-K SELECTION
 // ============================================================================
-// Recursively splits the combination range; each leaf keeps its own exact
-// top-K (by the NA-aware |r| ordering below), and sibling leaves' top-K lists
-// are merged pairwise back up the tree via join(). This is always exact: if a
-// combination is truly in the global top-K, fewer than K combinations beat it
-// ANYWHERE, so fewer than K beat it within its own partition either -- its
-// local rank is always <= K, so it can never fail to survive its own leaf's
-// selection. No partitioning scheme or data distribution can cause a genuine
-// top-K result to be dropped. Total work is O(n log K) instead of a full
-// O(n log n) sort, which matters a lot when K (keep_top, ~100) is tiny next
-// to n (n_combos, often in the hundreds of millions).
-struct TopKWorker : public Worker {
+// Splits the combination range into a small FIXED number of equal chunks and
+// runs them via parallelFor (the same low-overhead primitive already used
+// for scoring) -- each chunk does exactly one partial_sort over its own
+// range, writing into its own pre-allocated slot (no shared state, no
+// per-split heap allocation). A final serial merge over the (small, bounded)
+// set of per-chunk survivors -- at most N_TOPK_CHUNKS * keep_top candidates
+// -- produces the true top-K in a single cheap partial_sort.
+//
+// This is exact for the same reason a tree-reduction top-K is: if a
+// combination is truly in the global top-K, fewer than K combinations beat
+// it ANYWHERE, so fewer than K beat it within its own chunk either -- its
+// local rank is always <= K, so it always survives its own chunk's
+// selection and is present when the final merge runs. No chunking scheme or
+// data distribution can cause a genuine top-K result to be dropped.
+//
+// (Two earlier versions tried here, both correct but similarly slow on huge
+// n_combos: RcppParallel's parallelReduce with a tree-of-joins design, and a
+// chunked parallelFor design that materialized each chunk as (score, index)
+// pairs and ran partial_sort over the whole chunk. Both effectively touch
+// and reorder the ENTIRE chunk just to keep the top handful -- partial_sort
+// on millions of elements to keep 100 is still real, non-trivial work no
+// matter how the elements are laid out. Fixed below with a genuine
+// single-pass streaming top-K per chunk: a small (size keep_top) min-heap
+// that only gets touched when a candidate actually beats the current worst
+// kept item. The overwhelming majority of combinations fail that one
+// comparison and cost nothing further -- no allocation, no reordering, no
+// touching the heap at all -- so total work is close to a single sequential
+// read of results[], not an O(n log k) sort of it.
+#define N_TOPK_CHUNKS 256
+
+struct ScoreIdx {
+  float score;  // NA already mapped to -1 by the caller -- always sorts worst
+  int idx;
+};
+
+// std::greater-style comparator -> push_heap/pop_heap maintain a MIN-heap,
+// so heap.front() is always the current worst kept item (the one a new
+// candidate must beat to be worth inserting).
+static inline bool score_idx_min_heap_cmp(const ScoreIdx& a, const ScoreIdx& b) {
+  return a.score > b.score;
+}
+
+struct ChunkTopKWorker : public Worker {
   const std::vector<float>& results;
   const int n_top;
-  std::vector<int> local_idx;  // always sorted best-first, size <= n_top
+  const long long n_combos;
+  const int num_chunks;
+  std::vector<std::vector<ScoreIdx>>& chunk_results;
 
-  TopKWorker(const std::vector<float>& results, int n_top)
-    : results(results), n_top(n_top) {}
-
-  TopKWorker(const TopKWorker& other, Split)
-    : results(other.results), n_top(other.n_top) {}
+  ChunkTopKWorker(const std::vector<float>& results, int n_top, long long n_combos,
+                   int num_chunks, std::vector<std::vector<ScoreIdx>>& chunk_results)
+    : results(results), n_top(n_top), n_combos(n_combos),
+      num_chunks(num_chunks), chunk_results(chunk_results) {}
 
   void operator()(std::size_t begin, std::size_t end) {
-    std::vector<int> chunk(end - begin);
-    std::iota(chunk.begin(), chunk.end(), (int)begin);
-    merge_in(chunk);
-  }
+    for (std::size_t c = begin; c < end; ++c) {
+      long long chunk_begin = (long long)c * n_combos / num_chunks;
+      long long chunk_end = (long long)(c + 1) * n_combos / num_chunks;
+      int local_n = (int)(chunk_end - chunk_begin);
+      int k = std::min(n_top, local_n);
 
-  void join(const TopKWorker& rhs) {
-    merge_in(rhs.local_idx);
-  }
+      std::vector<ScoreIdx> heap;
+      heap.reserve(k);
 
-private:
-  bool combo_better(int i1, int i2) const {
-    bool na1 = std::isnan(results[i1]);
-    bool na2 = std::isnan(results[i2]);
-    if (na1 && na2) return false;
-    if (na1) return false;
-    if (na2) return true;
-    return std::abs(results[i1]) > std::abs(results[i2]);
-  }
+      const float* src = results.data() + chunk_begin;
+      for (int i = 0; i < local_n; ++i) {
+        float raw = src[i];
+        float mag = std::isnan(raw) ? -1.0f : std::abs(raw);
 
-  void merge_in(const std::vector<int>& incoming) {
-    std::vector<int> merged;
-    merged.reserve(local_idx.size() + incoming.size());
-    merged.insert(merged.end(), local_idx.begin(), local_idx.end());
-    merged.insert(merged.end(), incoming.begin(), incoming.end());
-    int k = std::min((size_t)n_top, merged.size());
-    std::partial_sort(merged.begin(), merged.begin() + k, merged.end(),
-                      [this](int i1, int i2) { return combo_better(i1, i2); });
-    merged.resize(k);
-    local_idx = std::move(merged);
+        if ((int)heap.size() < k) {
+          heap.push_back({mag, (int)chunk_begin + i});
+          std::push_heap(heap.begin(), heap.end(), score_idx_min_heap_cmp);
+        } else if (mag > heap.front().score) {
+          std::pop_heap(heap.begin(), heap.end(), score_idx_min_heap_cmp);
+          heap.back() = {mag, (int)chunk_begin + i};
+          std::push_heap(heap.begin(), heap.end(), score_idx_min_heap_cmp);
+        }
+      }
+
+      chunk_results[c] = std::move(heap);
+    }
   }
 };
+
+// Runs ChunkTopKWorker over [0, n_combos) and returns the true top-K indices
+// (sorted best-first, size <= keep_top).
+std::vector<int> parallel_top_k(const std::vector<float>& results, int n_combos, int keep_top) {
+  int n_top = std::min(keep_top, n_combos);
+  int num_chunks = std::min((long long)N_TOPK_CHUNKS, (long long)n_combos);
+  if (num_chunks < 1) num_chunks = 1;
+
+  std::vector<std::vector<ScoreIdx>> chunk_results(num_chunks);
+  ChunkTopKWorker chunk_worker(results, n_top, n_combos, num_chunks, chunk_results);
+  parallelFor(0, num_chunks, chunk_worker);
+
+  std::vector<ScoreIdx> merged;
+  merged.reserve((size_t)num_chunks * n_top);
+  for (auto& cr : chunk_results) merged.insert(merged.end(), cr.begin(), cr.end());
+
+  // Same comparator as the per-chunk heap (a.score > b.score): here it gives
+  // descending / best-first order, which is what partial_sort needs.
+  int final_k = std::min(n_top, (int)merged.size());
+  std::partial_sort(merged.begin(), merged.begin() + final_k, merged.end(), score_idx_min_heap_cmp);
+  merged.resize(final_k);
+
+  std::vector<int> idx(final_k);
+  for (int i = 0; i < final_k; ++i) idx[i] = merged[i].idx;
+  return idx;
+}
 
 // [[Rcpp::export]]
 List process_all_combinations_cpp_parallel_float(
@@ -387,13 +443,11 @@ List process_all_combinations_cpp_parallel_float(
   
   TIMESTAMP; // 3
   
-  // Sorting & Output -- exact parallel top-K (see TopKWorker above) instead
-  // of a single-threaded partial_sort: on large runs the old sort was a
-  // serial bottleneck with no progress indication.
+  // Sorting & Output -- exact parallel top-K (see parallel_top_k above)
+  // instead of a single-threaded partial_sort: on large runs the old sort
+  // was a serial bottleneck with no progress indication.
   int n_top = std::min(keep_top, n_combos);
-  TopKWorker topk(results, n_top);
-  parallelReduce(0, n_combos, topk);
-  std::vector<int>& idx = topk.local_idx;
+  std::vector<int> idx = parallel_top_k(results, n_combos, keep_top);
 
   TIMESTAMP; // 4
   
@@ -563,12 +617,10 @@ List process_all_combinations_cpp_gram(
 
   TIMESTAMP; // 2
 
-  // Exact parallel top-K (see TopKWorker above) instead of a single-threaded
-  // partial_sort.
+  // Exact parallel top-K (see parallel_top_k above) instead of a
+  // single-threaded partial_sort.
   int n_top = std::min(keep_top, n_combos);
-  TopKWorker topk(results, n_top);
-  parallelReduce(0, n_combos, topk);
-  std::vector<int>& idx = topk.local_idx;
+  std::vector<int> idx = parallel_top_k(results, n_combos, keep_top);
 
   TIMESTAMP; // 3
 
