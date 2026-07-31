@@ -288,6 +288,14 @@ reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALS
     ROUND_BUDGET <- 1000000  # bounds intermediate scoring cost only, not final pool size (tuned empirically against recovery-rate tests, not a formula)
     RANK_KEEP_TOP <- 10000   # top combos used to rank items each round
 
+    # \r only returns to the start of the CURRENT visual line, not the whole
+    # logical line -- if the printed text is wider than the console, it wraps
+    # onto a second visual line that \r can never reach, leaving stray
+    # remnants behind on later, shorter redraws. Bounding every redraw to a
+    # fixed width no wider than the console guarantees it always fits one
+    # visual line, so \r can fully clear/overwrite it.
+    prog_width <- max(getOption("width", 80L) - 1L, 20L)
+
     pool <- current_cols
     k <- min(2, n.items)
     max_rounds <- n.items + 5  # safety cap; should converge in at most n.items-1 rounds
@@ -298,7 +306,9 @@ reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALS
       n_pool <- length(pool)
 
       if (show.progress) {
-        cat(sprintf("\r~{ Progressive narrowing }~ scoring k = %d, pool = %d          ", k, n_pool))
+        msg <- sprintf("~{ Progressive narrowing }~ scoring k = %d, pool = %d", k, n_pool)
+        if (nchar(msg) > prog_width) msg <- substr(msg, 1, prog_width)
+        cat("\r", formatC(msg, width = -prog_width), sep = "")
         flush.console()
       }
 
@@ -365,7 +375,7 @@ reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALS
       k <- next_k
     }
 
-    if (show.progress) cat("\n")
+    if (show.progress) cat("\r", strrep(" ", prog_width), "\r", sep = "")
 
     return(pool)
   }
@@ -498,8 +508,7 @@ reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALS
 
     cpp_results <- list(leaderboard = leaderboard,
                         timings_cpp = cpp_result$timings_cpp,
-                        used_fast_path = used_fast_path,
-                        imputed_for_search = used_fast_path && anyNA(data))
+                        used_fast_path = used_fast_path)
 
     return(cpp_results)
   }
@@ -989,10 +998,6 @@ reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALS
                                                  is_binary, n.items, ranking_metric,
                                                  optimize_for, show.progress, leaderboard_length,
                                                  speed)
-
-  if (isTRUE(cpp_results$imputed_for_search) && verbose) {
-    message("=~ Fast mode: initial search completed on Gram matrix with mean-imputation. All reported statistics are recomputed from the true data. Use speed = 'conservative' to disable.")
-  }
 
   leaderboard <- cpp_results$leaderboard
   timings_cpp <- cpp_results$timings_cpp                                                                                                                   

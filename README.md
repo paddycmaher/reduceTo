@@ -1,8 +1,6 @@
 # reduceTo: High-Performance Combinatorial Scale Optimisation
 
-**Find the optimal subset of items from larger scales through a Gram-matrix-accelerated exhaustive search, with progressive-k narrowing for very large item pools.**
-
-An R package for psychometric scale reduction that finds the best-performing item combinations within its search space, with a memory-optimised C++ backend.
+**Find the optimal unit-weighted subset of items from any item bank through ultra-fast exhaustive search.**
 
 ------------------------------------------------------------------------
 
@@ -12,11 +10,11 @@ An R package for psychometric scale reduction that finds the best-performing ite
 
 ### Key Features
 
--   **Exhaustive**: Scores every combination within the designated search space to find the optimal item set
--   **Rapid**: Parallelised C++ backend that scores combinations from precomputed column moments (a Gram matrix)
--   **Scales Smartly**: Automatic progressive-k narrowing for very large, intractable item pools (100+ items)
--   **Robust**: Unit-weighting helps prevent overfitting, and represents real-world sum-score usage
--   **Production-Ready**: Built-in cross-validation option, progress tracking, robust error handling
+- **Exhaustive**: Tries every combination in the chosen search space to find the optimal item set
+- **Rapid**: Parallelised C++ backend that scores combinations from precomputed column moments (a Gram matrix)
+- **Scales**: For very large, intractable item reduction problems (100+ items), (optionally) triggers a cautious optimisation algorithm to reduce the search space to a manageable size
+- **Robust**: Unit-weighting mitigates overfitting, and also is representative of common real-world sum-score usages
+- **Production-Ready**: Built-in cross-validation option, progress tracking, robust error handling
 
 ------------------------------------------------------------------------
 
@@ -24,7 +22,7 @@ An R package for psychometric scale reduction that finds the best-performing ite
 
 ``` r
 # Install from GitHub
-devtools::install_github("paddycm/reduceTo")
+devtools::install_github("paddycmaher/reduceTo")
 ```
 
 **Requirements:** R ≥ 4.0, C++11 compiler, RcppParallel
@@ -78,14 +76,20 @@ result <- reduceTo(data, n.items = 6, target = diagnosis)
 
 ### Intelligent Optimisation for Large Pools
 
-When exhaustive search becomes intractable, reduceTo narrows the search area first, before moving to **exhaustive search**, using **progressive-k narrowing**: exhaustively scores every combination at a small k, keeps the best-performing items, then grows k and repeats against the shrinking pool -- cheap because of the Gram-matrix shortcut, and it never discards a combination without actually scoring it.
+When exhaustive search becomes intractable, reduceTo narrows the search area first, before moving to **exhaustive search**, using **progressive-k narrowing**: exhaustively scores every combination at a small k, keeps the best-performing items, then grows k and repeats against the shrinking pool. This is computationally cheap because it relies on the same Gram-matrix approach, and no combinations are discarded without being scored.
 
 ``` r
 # Choose 10 from 200 items (2.5 trillion combinations)
 result <- reduceTo(data = large_item_bank, n.items = 10)
 ```
 
-**Process:** 1. Prefilter: drops items far weaker than the strongest by relevance 2. Progressive narrowing: exhaustively scores combinations at k = 2, 3, ... , ranking items by their best achieved score and dropping the weakest, until the remaining pool is small enough 3. Exhaustive search: guarantees optimum within the refined pool
+**Process:**
+
+1\. Prefilter: drops any junk items far weaker than the strongest item by relevance (default: 5x)
+
+2\. Progressive narrowing: exhaustively scores combinations at k = 2, 3, ... , ranking items by their best achieved score and dropping the weakest, until the remaining pool is small enough
+
+3\. Exhaustive search: finds the best set in the refined pool by brute force
 
 ### Cross-Validation
 
@@ -105,7 +109,7 @@ result <- reduceTo(
 ### Essential
 
 | Parameter | Description                                         | Default    |
-|--------------|-------------------------------------------|--------------|
+|----------------|----------------------------------------|----------------|
 | `data`    | Matrix/data.frame of item responses                 | *required* |
 | `n.items` | Number of items in short form                       | *required* |
 | `target`  | Target criterion (NULL = parent scale preservation) | `NULL`     |
@@ -114,7 +118,7 @@ result <- reduceTo(
 ### Optimisation
 
 | Parameter | Description | Default |
-|--------------|---------------------------------------------|--------------|
+|----------------|-----------------------------------------|----------------|
 | `optimise` | Heuristic pruning for large item pools: `"progressive"` narrows the item pool via exhaustive small-k scoring, `"none"` forces exhaustive search regardless of `ceiling` | `"progressive"` |
 | `prefilter.ratio` | Before optimisation runs, drop items whose relevance is more than this many times weaker than the strongest item (set `Inf`/`NULL` to disable) | `5` |
 | `ceiling` | Combination threshold for optimisation | `10,000,000` |
@@ -129,8 +133,8 @@ result <- reduceTo(
 | `generate` | Compute scores for best set | `TRUE` |
 | `cross.validate` | Enable train/holdout split | `FALSE` |
 | `method` | Ranking metric (binary: `"r"`, `"youden_j"`, `"binarised_r"`) | `NULL` |
-| `show.progress` | Show the live progress bar/speedometer and optimisation-stage updates | `TRUE` |
-| `verbose` | Print informational messages (binary detection, optimisation triggers, prefilter/fast-path notices, etc.) -- set `FALSE` to silence these while keeping `show.progress`'s live updates | `TRUE` |
+| `show.progress` | Displays live progress bar and optimisation-stage updates | `TRUE` |
+| `verbose` | Print informational messages (binary detection, optimisation triggers, prefilter notices, etc.) -- set `FALSE` to silence these while keeping `show.progress`'s live updates | `TRUE` |
 
 ------------------------------------------------------------------------
 
@@ -207,49 +211,48 @@ result <- reduceTo(
 
 ### Gram-Matrix Engine vs. Row-Scan (isolated scoring speed)
 
-Measured on a massive dataset (300 items, N = 300,000), scoring all C(300, 3) = 4,455,100 combinations directly against a continuous target -- the same precomputed input fed to each engine, isolating the scoring step itself from pool-narrowing or other R-side overhead:
+Measured on a massive dataset (300 items, N = 300,000), scoring all C(300, 3) = 4,455,100 combinations directly against a continuous target, without optimisation. The same precomputed input fed to both engines, isolating the scoring step itself from pool-narrowing or other R-side overhead:
 
 | Engine | Combinations/sec | Time for 4.45M combinations |
-|--------------------------------------|----------------|------------------|
-| Archived pre-Gram version (May 2026), row-scan | \~8,850/s | \~8.4 min |
-| Current, `speed = "conservative"` (same row-scan algorithm) | \~9,190/s | \~8.1 min |
-| Current, `speed = "fast"` (Gram matrix) | 100M+/s | \~0.28s (incl. one-time Gram precompute) |
+|-------------------------------------|------------------|------------------|
+| `speed = "conservative"` (Row-scan algorithm) | \~9,190/s | \~8.1 min |
+| `speed = "fast"` (Gram matrix) | 100M+/s | \~0.28s (incl. one-time Gram precompute) |
 
-**\~1,800x faster** than the archived row-scan engine for this case. This is close to the ceiling case for the Gram matrix approach (small `n.items`, large N, since row-scan cost scales with N per combination while the Gram engine's is O(n.items\^2) regardless of N); real end-to-end runs below see smaller, but still large, gains once pool narrowing and R-side overhead are included.
+**\~1,800x faster** than a standard row-scan engine for this case. This is close to the ceiling case for the Gram matrix approach (small `n.items`, large N, since row-scan cost scales with N per combination while the Gram engine's is O(n.items\^2) regardless of N); real end-to-end runs below see smaller, but still large, gains once pool narrowing and R-side overhead are included.
 
 ### reduceTo() vs. Plain R
 
-As a comparison, the "Base R Only" column below estimates the best case scenario for base-R implementation (a vectorised per-combination `rowMeans()` + `cor()` loop -- no Rcpp, no compression, no Gram matrix, no pool narrowing), throughput-measured on a real sample of combinations and extrapolated to the full combination count. Measured on real data, the IPIP-NEO Neuroticism scale (60 items, N = 5,000):
+As a comparison, the "Base R Only" column below estimates the best-case scenario for base-R implementation (a vectorised per-combination `rowMeans()` + `cor()` loop), throughput-measured on a real sample of combinations and extrapolated to the full combination count. Assessed on real data, the IPIP-NEO Neuroticism scale (60 items, N = 5,000):
 
 | Selecting | Combinations   | Base R Only  | reduceTo() (default settings) |
 |-----------|----------------|--------------|-------------------------------|
 | 3 of 60   | 34,220         | \~2.4 sec    | 0.03s                         |
 | 5 of 60   | 5,461,512      | \~8.2 min    | 0.06s                         |
-| 8 of 60   | 2,558,620,845  | \~3.7 days   | 0.97s (optimisation triggers) |
-| 10 of 60  | 75,394,027,566 | \~4.2 months | 1.22s (optimisation triggers) |
+| 8 of 60   | 2,558,620,845  | \~3.7 days   | 0.97s (with optimisation)     |
+| 10 of 60  | 75,394,027,566 | \~4.2 months | 1.22s (with optimisation)     |
 
-`reduceTo()`'s C++ backend, Gram-matrix scoring, and (for pools too large to enumerate directly) progressive-k narrowing combine to turn a months-long base-R search into just over a second.
+Collectively, the C++ backend, Gram-matrix scoring, and progressive-k narrowing let reduceTo turn a months-long base-R search into just over a second.
 
-Your mileage will vary with your hardware and sample size; `reduceTo()` prints a calibrated estimate for your own machine and dataset before narrowing the item pool.
+Your mileage will vary with your hardware and use case, but `reduceTo()` computes a live ETA.
 
 ## Methodological Notes
 
 ### Best Practices
 
--   Review top 5-10 solutions, not just #1 - similar performance allows choosing more theoretically valid items
--   Garbage in, garbage out. Please, please ensure your parent scale is valid before shortening it
--   Use cross-validation for small samples (N \< 500)
+- Review top 5-10 solutions, not just #1 - similar performance allows choosing more theoretically valid items
+- Garbage in, garbage out. Please, please ensure your parent scale is valid before shortening it
+- Use cross-validation for smaller samples (N \< 500) where overfitting may be a concern
 
-### Heuristic Optimisation Reliability
+### Optimisation Reliability
 
-Tested against real data and adversarial synthetic structures (200M+ combinations each) crossing several item-quality patterns. In testing, this heuristic approach only failed to find the true optimum in extreme scenarios, such as an item whose value is invisible unless combined with several (3+) other specific items -- and even then, a more generous `ceiling` reliably recovered it. Ordinary item structures (including simple weak/opposite-signed pairs) recovered the true optimum every time tested, across a wide range of `ceiling` settings.
+The default optimisation settings were empirically calibrated in both real and deliberately-adversarial simulated datasets (200M+ combinations each). In practice, the heuristic approach only failed to find the true optimal item bundle in extreme scenarios, such as when an item's value is invisible unless combined with several (3+) other specific items. In these cases, the true solution could still be found by raising the `ceiling` value. Ordinary item structures (including simple weak/opposite-signed pairs) recovered the true optimum every time tested, across a wide range of `ceiling` settings.
 
 ### Binary Targets
 
--   **Point-biserial r**: Equivalent to Cohen's d, correlates with AUC
--   **Youden's J**: Maximises sensitivity + specificity - 1
--   **Binarised r**: Applies optimal cutoff first, may find different solutions
--   **AUC**: Threshold-independent; always reported alongside the others (`leaderboard$auc`, `binary_info$results$auc`) but not selectable via `method=`, since it can't be scored via the same fast moment-based shortcuts as the other metrics
+- **Point-biserial r**: Equivalent to Cohen's d, correlates with AUC
+- **Youden's J**: Maximises sensitivity + specificity - 1
+- **Binarised r**: Applies optimal cutoff first, may find different solutions
+- **AUC**: Threshold-independent; always reported alongside the others (`leaderboard$auc`, `binary_info$results$auc`) but not selectable via `method=`, since it can't be scored via the same fast moment-based shortcuts as the other metrics
 
 ------------------------------------------------------------------------
 

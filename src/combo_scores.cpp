@@ -2,6 +2,7 @@
 
 #include <Rcpp.h>
 #include <RcppParallel.h>
+#include <tbb/parallel_sort.h>
 #include <algorithm>
 #include <vector>
 #include <cmath>
@@ -330,12 +331,20 @@ List process_all_combinations_cpp_parallel_float(
   
   TIMESTAMP; // 3
   
-  // Sorting & Output (Same as before)
+  // Sorting & Output -- full parallel sort (TBB) rather than a single-threaded
+  // partial_sort: on large runs this stage was a serial bottleneck with no
+  // progress indication. A per-thread local-top-K + merge would be faster
+  // still, but the pool handed in here is quality-ranked (best items first)
+  // and the combo enumeration below is lexicographic over that ranking, so
+  // true top-K combinations cluster non-randomly in the enumeration -- a
+  // naive contiguous split could let one thread's local batch silently
+  // exceed its own keep_top and drop genuine top-K results. Full sort has
+  // no such risk.
   std::vector<int> idx(n_combos);
   std::iota(idx.begin(), idx.end(), 0);
   int n_top = std::min(keep_top, n_combos);
-  
-  std::partial_sort(idx.begin(), idx.begin() + n_top, idx.end(),
+
+  tbb::parallel_sort(idx.begin(), idx.end(),
                     [&results](int i1, int i2) {
                       bool na1 = std::isnan(results[i1]);
                       bool na2 = std::isnan(results[i2]);
@@ -344,7 +353,7 @@ List process_all_combinations_cpp_parallel_float(
                       if (na2) return true;
                       return std::abs(results[i1]) > std::abs(results[i2]);
                     });
-  
+
   TIMESTAMP; // 4
   
   CharacterVector comb_out(n_top);
@@ -513,11 +522,14 @@ List process_all_combinations_cpp_gram(
 
   TIMESTAMP; // 2
 
+  // Full parallel sort (TBB), not a single-threaded partial_sort -- see the
+  // comment on the equivalent sort in process_all_combinations_cpp_parallel_float
+  // for why a per-thread local-top-K + merge isn't safe here.
   std::vector<int> idx(n_combos);
   std::iota(idx.begin(), idx.end(), 0);
   int n_top = std::min(keep_top, n_combos);
 
-  std::partial_sort(idx.begin(), idx.begin() + n_top, idx.end(),
+  tbb::parallel_sort(idx.begin(), idx.end(),
                     [&results](int i1, int i2) {
                       bool na1 = std::isnan(results[i1]);
                       bool na2 = std::isnan(results[i2]);
