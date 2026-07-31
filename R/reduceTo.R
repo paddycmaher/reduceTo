@@ -881,7 +881,48 @@ reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALS
 
     if (optimise) {
 
-      # Measure real combinations/sec on this machine to estimate runtime
+      # Drop items far weaker than the strongest before estimating runtime,
+      # not just before optimisation runs -- otherwise the estimate below
+      # assumes the final search will use the full `ceiling` budget, when
+      # prefiltering alone often already brings the pool comfortably under
+      # ceiling before progressive narrowing would even need to run.
+      prefilter_message <- NULL
+      if (!is.null(prefilter.ratio) && is.finite(prefilter.ratio)) {
+        item_relevance <- relevance[cols]
+        keep_mask <- item_relevance >= (max(item_relevance, na.rm = TRUE) / prefilter.ratio)
+        keep_mask[is.na(keep_mask)] <- TRUE  # never drop items with undefined relevance
+
+        if (sum(keep_mask) >= n.items) {
+          n_before <- length(cols)
+          cols <- cols[keep_mask]
+          if (length(cols) < n_before) {
+            prefilter_message <- sprintf("=~ Prefilter: keeping %d of %d items (relevance >= 1/%g of the strongest item) before optimisation.",
+                                         length(cols), n_before, prefilter.ratio)
+          }
+        }
+      }
+
+      # Measure real combinations/sec on this machine to estimate runtime.
+      # A single small timed call is heavily biased toward one-time fixed
+      # costs (RcppParallel thread-pool startup, R<->C++ call overhead) that
+      # never recur once real work is running, making the estimate look far
+      # slower than reality. Instead: run a small first-look calibration
+      # (after an untimed warm-up, so thread-pool startup isn't counted at
+      # all), then use ITS OWN measured rate to size a second calibration
+      # aimed at ~TARGET_CALIB_TIME of real work, which is enough to
+      # amortise the fixed costs away. Both phases size themselves via
+      # choose(), so this stays cheap and safe regardless of engine speed --
+      # never based on a fixed pool-size margin that could blow up for large
+      # n.items under the (much slower) row-scan engine.
+      grow_pool_to_combos <- function(target_combos, start_p, max_p) {
+        p <- start_p
+        while (p < max_p && choose(p, n.items) < target_combos) p <- p + 1
+        p
+      }
+
+      TINY_CALIB_COMBOS <- 2000
+      TARGET_CALIB_TIME <- 0.1  # seconds
+
       if (identical(speed, "fast")) {
         # Gram engine cost doesn't depend on which items, so a small sample suffices
         col_means <- colMeans(data, na.rm = TRUE)
@@ -891,49 +932,63 @@ reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALS
         valid_rows <- !is.na(target)
         targ_valid <- target[valid_rows]
 
-        calib_pool_size <- min(ncol(data), n.items + 10)
-        calib_cols <- calib_data[valid_rows, 1:calib_pool_size, drop = FALSE]
-
-        t_calib <- Sys.time()
-        invisible(process_all_combinations_cpp_gram(
-          gram = crossprod(calib_cols),
-          col_sums = colSums(calib_cols),
-          col_target_dots = as.vector(crossprod(calib_cols, targ_valid)),
-          sum_target = sum(targ_valid),
-          sum_target_sq = sum(targ_valid^2),
-          n_valid = length(targ_valid),
-          n_items = n.items,
-          num_choose_from = calib_pool_size,
-          original_indices = 1:calib_pool_size,
-          keep_top = 1,
-          show_progress = FALSE
-        ))
-        calib_combos <- choose(calib_pool_size, n.items)
-        combos_per_sec <- calib_combos / max(as.numeric(difftime(Sys.time(), t_calib, units = "secs")), 1e-6)
+        run_calib_at <- function(p) {
+          cc <- calib_data[valid_rows, 1:p, drop = FALSE]
+          t0 <- Sys.time()
+          invisible(process_all_combinations_cpp_gram(
+            gram = crossprod(cc),
+            col_sums = colSums(cc),
+            col_target_dots = as.vector(crossprod(cc, targ_valid)),
+            sum_target = sum(targ_valid),
+            sum_target_sq = sum(targ_valid^2),
+            n_valid = length(targ_valid),
+            n_items = n.items,
+            num_choose_from = p,
+            original_indices = 1:p,
+            keep_top = 1,
+            show_progress = FALSE
+          ))
+          list(elapsed = as.numeric(difftime(Sys.time(), t0, units = "secs")), combos = choose(p, n.items))
+        }
 
       } else {
-        # Row-scan cost is ~O(n_rows * n.items) per combination regardless of
-        # which items, so a small stand-in pool gives a representative rate
-        calib_pool_size <- min(ncol(data), n.items + 10)
-        calib_compressed <- compress_for_cpp(data[, 1:calib_pool_size, drop = FALSE])
+        run_calib_at <- function(p) {
+          calib_compressed <- compress_for_cpp(data[, 1:p, drop = FALSE])
+          t0 <- Sys.time()
+          invisible(process_all_combinations_cpp_parallel_float(
+            data = calib_compressed,
+            n_items = n.items,
+            num_choose_from = p,
+            na_rm = na.rm,
+            target = target,
+            original_indices = 1:p,
+            keep_top = 1,
+            show_progress = FALSE
+          ))
+          list(elapsed = as.numeric(difftime(Sys.time(), t0, units = "secs")), combos = choose(p, n.items))
+        }
+      }
 
-        t_calib <- Sys.time()
-        invisible(process_all_combinations_cpp_parallel_float(
-          data = calib_compressed,
-          n_items = n.items,
-          num_choose_from = calib_pool_size,
-          na_rm = na.rm,
-          target = target,
-          original_indices = 1:calib_pool_size,
-          keep_top = 1,
-          show_progress = FALSE
-        ))
-        calib_combos <- choose(calib_pool_size, n.items)
-        combos_per_sec <- calib_combos / max(as.numeric(difftime(Sys.time(), t_calib, units = "secs")), 1e-6)
+      p0 <- grow_pool_to_combos(TINY_CALIB_COMBOS, n.items, ncol(data))
+      run_calib_at(p0)  # untimed warm-up
+      tiny <- run_calib_at(p0)
+      tiny_rate <- tiny$combos / max(tiny$elapsed, 1e-6)
+
+      p1 <- grow_pool_to_combos(tiny_rate * TARGET_CALIB_TIME, p0, ncol(data))
+      if (p1 > p0) {
+        grown <- run_calib_at(p1)
+        combos_per_sec <- grown$combos / max(grown$elapsed, 1e-6)
+      } else {
+        combos_per_sec <- tiny_rate
       }
 
       est_seconds <- num_combinations / combos_per_sec
-      opt_est_seconds <- ceiling / combos_per_sec
+      # The final exhaustive search processes however many combinations the
+      # (possibly already-prefiltered) pool actually has left, capped by
+      # ceiling -- not necessarily the full ceiling budget itself, since
+      # narrowing only runs, and only narrows as far, as it needs to
+      predicted_final_combos <- min(ceiling, choose(length(cols), n.items))
+      opt_est_seconds <- predicted_final_combos / combos_per_sec
 
       if (verbose) {
         message(paste0("=~ This task would generate ",
@@ -944,22 +999,7 @@ reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALS
                        format(ceiling, big.mark = ",",scientific = FALSE),
                        " (~",format_duration_range(opt_est_seconds, opt_est_seconds*5),
                        "). You can change this threshold with the 'ceiling' argument."))
-      }
-
-      # Drop items far weaker than the strongest before optimisation runs
-      if (!is.null(prefilter.ratio) && is.finite(prefilter.ratio)) {
-        item_relevance <- relevance[cols]
-        keep_mask <- item_relevance >= (max(item_relevance, na.rm = TRUE) / prefilter.ratio)
-        keep_mask[is.na(keep_mask)] <- TRUE  # never drop items with undefined relevance
-
-        if (sum(keep_mask) >= n.items) {
-          n_before <- length(cols)
-          cols <- cols[keep_mask]
-          if (length(cols) < n_before && verbose) {
-            message(sprintf("=~ Prefilter: keeping %d of %d items (relevance >= 1/%g of the strongest item) before optimisation.",
-                            length(cols), n_before, prefilter.ratio))
-          }
-        }
+        if (!is.null(prefilter_message)) message(prefilter_message)
       }
 
       cols <- perform_synergy_ranked_elimination(cols, data, n.items, ceiling, target, na.rm, opt.n, speed, show.progress)
