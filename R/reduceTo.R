@@ -10,7 +10,7 @@
 #' \strong{Key Features:}
 #' \itemize{
 #'   \item \strong{Combinatorial Search}: Exhaustively scores item subsets to guarantee finding the best-performing item set within the search space.
-#'   \item \strong{Heuristic Optimisation}: When the number of combinations exceeds the computational ceiling, the function automatically reduces the item pool through progressive-k narrowing before searching.
+#'   \item \strong{Heuristic Optimisation}: When the number of combinations exceeds the computational ceiling, the function automatically reduces the item pool using Synergy-Ranked Recursive Feature Elimination before searching.
 #'   \item \strong{Cross-Validation}: Supports a Train/Holdout split (default 75/25) to validate findings and prevent overfitting. Reports performance metrics for both the training and holdout samples side-by-side.
 #'   \item \strong{Binary Classifications}: For binary targets (0/1), automatically finds the optimal integer cut-off score to maximise classification accuracy (Youden's J) or binarised correlation. AUC (threshold-independent) is also reported.
 #' }
@@ -29,10 +29,11 @@
 #' @param cross.validate Numeric input controlling a data split into Training/Holdout
 #'   sets; if TRUE or 1, uses a 75%/25% split (default: FALSE)
 #' @param optimise Controls heuristic pruning for large item pools, used when
-#'   combinations exceed \code{ceiling}: \code{"progressive"} (default) exhaustively
-#'   scores small-k combinations and progressively narrows the item pool, keeping the
-#'   items with the best achieved score at each step; \code{"none"} forces exhaustive
-#'   search regardless of \code{ceiling} (can be slow)
+#'   combinations exceed \code{ceiling}: \code{"progressive"} (default) runs the
+#'   Synergistic RFE optimisation algorithm -- exhaustively scoring small-k combinations
+#'   and progressively narrowing the item pool, keeping the items with the best achieved
+#'   score at each step; \code{"none"} forces exhaustive search regardless of
+#'   \code{ceiling} (can be slow)
 #' @param prefilter.ratio Drops items whose relevance (correlation with the target, or
 #'   item-total centrality with no target) is more than \code{prefilter.ratio} times
 #'   weaker than the strongest item, before optimisation runs. Never prunes below
@@ -257,11 +258,11 @@ reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALS
     )
   }
 
-  # Progressive-k pool narrowing: exhaustively scores every combination at a
-  # small k, ranks items by their best achieved score, and drops the weakest
-  # before growing k -- until the pool is small enough for a final exhaustive
-  # search
-  perform_progressive_narrowing <- function(current_cols, data, n.items, ceiling, targ, na.rm, opt.n, speed, show.progress) {
+  # Synergy-Ranked Recursive Feature Elimination (Synergistic RFE): exhaustively
+  # scores every combination at a small k, ranks items by their best achieved
+  # score, and drops the weakest before growing k -- until the pool is small
+  # enough for a final exhaustive search
+  perform_synergy_ranked_elimination <- function(current_cols, data, n.items, ceiling, targ, na.rm, opt.n, speed, show.progress) {
 
     n_total <- nrow(data)
     if (n_total > opt.n) {
@@ -306,7 +307,7 @@ reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALS
       n_pool <- length(pool)
 
       if (show.progress) {
-        msg <- sprintf("~{ Progressive narrowing }~ scoring k = %d, pool = %d", k, n_pool)
+        msg <- sprintf("~{ Synergistic RFE }~ scoring k = %d, pool = %d", k, n_pool)
         if (nchar(msg) > prog_width) msg <- substr(msg, 1, prog_width)
         cat("\r", formatC(msg, width = -prog_width), sep = "")
         flush.console()
@@ -963,7 +964,7 @@ reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALS
         }
       }
 
-      cols <- perform_progressive_narrowing(cols, data, n.items, ceiling, target, na.rm, opt.n, speed, show.progress)
+      cols <- perform_synergy_ranked_elimination(cols, data, n.items, ceiling, target, na.rm, opt.n, speed, show.progress)
 
     } else {
       if (verbose) {

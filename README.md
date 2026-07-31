@@ -76,7 +76,7 @@ result <- reduceTo(data, n.items = 6, target = diagnosis)
 
 ### Intelligent Optimisation for Large Pools
 
-When exhaustive search becomes intractable, reduceTo narrows the search area first, before moving to **exhaustive search**, using **progressive-k narrowing**: exhaustively scores every combination at a small k, keeps the best-performing items, then grows k and repeats against the shrinking pool. This is computationally cheap because it relies on the same Gram-matrix approach, and no combinations are discarded without being scored.
+When exhaustive search becomes intractable, reduceTo narrows the search area first, before moving to **exhaustive search**, using **Synergy-Ranked Recursive Feature Elimination** (Synergistic RFE): exhaustively scores every combination at a small k, keeps the best-performing items, then grows k and repeats against the shrinking pool. This is computationally cheap because it relies on the same Gram-matrix approach, and no combinations are discarded without being scored.
 
 ``` r
 # Choose 10 from 200 items (2.5 trillion combinations)
@@ -87,7 +87,7 @@ result <- reduceTo(data = large_item_bank, n.items = 10)
 
 1\. Prefilter: drops any junk items far weaker than the strongest item by relevance (default: 5x)
 
-2\. Progressive narrowing: exhaustively scores combinations at k = 2, 3, ... , ranking items by their best achieved score and dropping the weakest, until the remaining pool is small enough
+2\. Synergistic RFE: exhaustively scores combinations at k = 2, 3, ... , ranking items by their best achieved score and dropping the weakest, until the remaining pool is small enough
 
 3\. Exhaustive search: finds the best set in the refined pool by brute force
 
@@ -119,7 +119,7 @@ result <- reduceTo(
 
 | Parameter | Description | Default |
 |----------------|-----------------------------------------|----------------|
-| `optimise` | Heuristic pruning for large item pools: `"progressive"` narrows the item pool via exhaustive small-k scoring, `"none"` forces exhaustive search regardless of `ceiling` | `"progressive"` |
+| `optimise` | Heuristic pruning for large item pools: `"progressive"` runs Synergistic RFE, narrowing the item pool via exhaustive small-k scoring, `"none"` forces exhaustive search regardless of `ceiling` | `"progressive"` |
 | `prefilter.ratio` | Before optimisation runs, drop items whose relevance is more than this many times weaker than the strongest item (set `Inf`/`NULL` to disable) | `5` |
 | `ceiling` | Combination threshold for optimisation | `10,000,000` |
 | `opt.n` | Max rows to subsample during optimisation (speeds up large N) | `5000` |
@@ -202,7 +202,7 @@ result <- reduceTo(
   target = ability
 )
 
-# Progressive narrowing identifies the strongest ~45 items
+# Synergistic RFE identifies the strongest ~45 items
 # Exhaustive search on C(45, 10) = 3.2M combinations
 # Total time: ~30 seconds
 ```
@@ -231,7 +231,7 @@ As a comparison, the "Base R Only" column below estimates the best-case scenario
 | 8 of 60   | 2,558,620,845  | \~3.7 days   | 0.97s (with optimisation)     |
 | 10 of 60  | 75,394,027,566 | \~4.2 months | 1.22s (with optimisation)     |
 
-Collectively, the C++ backend, Gram-matrix scoring, and progressive-k narrowing let reduceTo turn a months-long base-R search into just over a second.
+Collectively, the C++ backend, Gram-matrix scoring, and Synergistic RFE let reduceTo turn a months-long base-R search into just over a second.
 
 Your mileage will vary with your hardware and use case, but `reduceTo()` computes a live ETA.
 

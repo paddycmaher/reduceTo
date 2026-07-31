@@ -51,10 +51,11 @@ internal consistency, an unquoted column name from data, or an external vector
 sets; if TRUE or 1, uses a 75\%/25\% split (default: FALSE)}
 
 \item{optimise}{Controls heuristic pruning for large item pools, used when
-combinations exceed \code{ceiling}: \code{"progressive"} (default) exhaustively
-scores small-k combinations and progressively narrows the item pool, keeping the
-items with the best achieved score at each step; \code{"none"} forces exhaustive
-search regardless of \code{ceiling} (can be slow)}
+combinations exceed \code{ceiling}: \code{"progressive"} (default) runs the
+Synergistic RFE optimisation algorithm -- exhaustively scoring small-k combinations
+and progressively narrowing the item pool, keeping the items with the best achieved
+score at each step; \code{"none"} forces exhaustive search regardless of
+\code{ceiling} (can be slow)}
 
 \item{prefilter.ratio}{Drops items whose relevance (correlation with the target, or
 item-total centrality with no target) is more than \code{prefilter.ratio} times
@@ -110,7 +111,7 @@ combinations in seconds.
 \strong{Key Features:}
 \itemize{
 \item \strong{Combinatorial Search}: Exhaustively scores item subsets to guarantee finding the best-performing item set within the search space.
-\item \strong{Heuristic Optimisation}: When the number of combinations exceeds the computational ceiling, the function automatically reduces the item pool through progressive-k narrowing before searching.
+\item \strong{Heuristic Optimisation}: When the number of combinations exceeds the computational ceiling, the function automatically reduces the item pool using Synergy-Ranked Recursive Feature Elimination before searching.
 \item \strong{Cross-Validation}: Supports a Train/Holdout split (default 75/25) to validate findings and prevent overfitting. Reports performance metrics for both the training and holdout samples side-by-side.
 \item \strong{Binary Classifications}: For binary targets (0/1), automatically finds the optimal integer cut-off score to maximise classification accuracy (Youden's J) or binarised correlation. AUC (threshold-independent) is also reported.
 }
