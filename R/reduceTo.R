@@ -256,6 +256,48 @@ reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALS
     )
   }
 
+  # Bounds intermediate scoring cost during Synergistic RFE, not final pool
+  # size (tuned empirically against recovery-rate tests, not a formula).
+  # Defined once here (rather than inside perform_synergy_ranked_elimination)
+  # so predict_narrowing_final_pool_size below can replay the exact same
+  # round-sizing decisions when estimating runtime, without duplicating the
+  # constant and risking drift between the real run and the estimate.
+  ROUND_BUDGET <- 1000000
+
+  # Largest pool size at or under `floor_size` whose choose(pool_size, k)
+  # doesn't exceed `budget`. Pure size arithmetic, no data or scoring
+  # involved -- shared by the real narrowing loop (which narrows the pool
+  # this way every round) and predict_narrowing_final_pool_size below (which
+  # replays the same decisions to predict, cheaply and exactly, where
+  # narrowing will end up -- for the runtime estimate only).
+  largest_pool_under_budget <- function(pool_size, k, budget, floor_size) {
+    while (pool_size > floor_size && choose(pool_size, k) > budget) pool_size <- pool_size - 1
+    pool_size
+  }
+
+  # Replays perform_synergy_ranked_elimination's round-by-round pool-size
+  # decisions without any real scoring, to predict the final pool size (and
+  # hence the final search's combination count) ahead of time. This matters
+  # because that final count is often NOT the full `ceiling` budget: binomial
+  # coefficients grow so steeply with n.items that a single pool-size
+  # decrement can drop combos far below ceiling, especially for larger
+  # n.items -- so assuming the full ceiling gets used can itself be wildly
+  # wrong, independently of how accurate the throughput calibration is.
+  predict_narrowing_final_pool_size <- function(start_pool_size, n.items, ceiling) {
+    pool_size <- start_pool_size
+    k <- min(2, n.items)
+    max_rounds <- n.items + 5
+    round_i <- 0
+    while (choose(pool_size, n.items) > ceiling && round_i < max_rounds) {
+      round_i <- round_i + 1
+      next_k <- min(k + 1, n.items)
+      budget_for_next <- if (next_k >= n.items) ceiling else ROUND_BUDGET
+      pool_size <- largest_pool_under_budget(pool_size, next_k, budget_for_next, n.items)
+      k <- next_k
+    }
+    pool_size
+  }
+
   # Synergy-Ranked Recursive Feature Elimination (Synergistic RFE): exhaustively
   # scores every combination at a small k, ranks items by their best achieved
   # score, and drops the weakest before growing k -- until the pool is small
@@ -284,7 +326,6 @@ reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALS
       compressed_data <- compress_for_cpp(data)
     }
 
-    ROUND_BUDGET <- 1000000  # bounds intermediate scoring cost only, not final pool size (tuned empirically against recovery-rate tests, not a formula)
     RANK_KEEP_TOP <- 10000   # top combos used to rank items each round
 
     # \r only returns to the start of the CURRENT visual line, not the whole
@@ -364,11 +405,7 @@ reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALS
       # ceiling would otherwise allow.
       next_k <- min(k + 1, n.items)
       budget_for_next <- if (next_k >= n.items) ceiling else ROUND_BUDGET
-
-      target_pool_size <- n_pool
-      while (target_pool_size > n.items && choose(target_pool_size, next_k) > budget_for_next) {
-        target_pool_size <- target_pool_size - 1
-      }
+      target_pool_size <- largest_pool_under_budget(n_pool, next_k, budget_for_next, n.items)
 
       pool <- ranked[1:target_pool_size]
       k <- next_k
@@ -983,11 +1020,15 @@ reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALS
       }
 
       est_seconds <- num_combinations / combos_per_sec
-      # The final exhaustive search processes however many combinations the
-      # (possibly already-prefiltered) pool actually has left, capped by
-      # ceiling -- not necessarily the full ceiling budget itself, since
-      # narrowing only runs, and only narrows as far, as it needs to
-      predicted_final_combos <- min(ceiling, choose(length(cols), n.items))
+      # Predict the final search's actual combination count by replaying
+      # narrowing's own pool-size decisions (see predict_narrowing_final_pool_size
+      # above) rather than assuming it uses the full `ceiling` budget --
+      # binomial coefficients grow so steeply with n.items that a single
+      # pool-size decrement can land well under ceiling, especially for
+      # larger n.items, so that assumption can be wrong by orders of
+      # magnitude on its own, independent of calibration accuracy.
+      predicted_final_pool_size <- predict_narrowing_final_pool_size(length(cols), n.items, ceiling)
+      predicted_final_combos <- choose(predicted_final_pool_size, n.items)
       opt_est_seconds <- predicted_final_combos / combos_per_sec
 
       if (verbose) {
