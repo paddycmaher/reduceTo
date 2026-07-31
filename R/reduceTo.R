@@ -375,7 +375,7 @@ reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALS
       k <- next_k
     }
 
-    if (show.progress) cat("\r", strrep(" ", prog_width), "\r", sep = "")
+    if (show.progress) cat("\n")
 
     return(pool)
   }
