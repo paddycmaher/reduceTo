@@ -657,11 +657,30 @@ reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALS
     # Return logic
     if (length(values) == 0) return("0 seconds")
     if (length(values) == 1) return(values[1])
-    
+
     return(values[1])
   }
-  
-  
+
+  # "~X unit to Y unit" reads awkwardly when both bounds land on the same
+  # unit (e.g. "2 hours to 11 hours") -- collapse to "~X to Y unit" in that
+  # case; keep both full strings when the units differ (e.g. "45 seconds to
+  # 2 minutes")
+  format_duration_range <- function(low_seconds, high_seconds) {
+    low <- format_duration(low_seconds)
+    high <- format_duration(high_seconds)
+
+    low_unit <- sub("^[0-9,]+ ", "", low)
+    high_unit <- sub("^[0-9,]+ ", "", high)
+
+    if (identical(sub("s$", "", low_unit), sub("s$", "", high_unit))) {
+      low_count <- sub(" .*$", "", low)
+      return(paste0(low_count, " to ", high))
+    }
+
+    paste0(low, " to ", high)
+  }
+
+
   # ============================================================================
   # MAIN FUNCTION BODY
   # ============================================================================
@@ -920,11 +939,11 @@ reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALS
       if (verbose) {
         message(paste0("=~ This task would generate ",
                        format(num_combinations, big.mark = ",",scientific = FALSE),
-                       " combinations to compare (~",format_duration(est_seconds), " to ",format_duration(est_seconds*5),
+                       " combinations to compare (~",format_duration_range(est_seconds, est_seconds*5),
                        " with N = ",format(nrow(data), big.mark = ",",scientific = FALSE) ,
                        "). \n=~ Optimisation will be used to reduce combinations to below ",
                        format(ceiling, big.mark = ",",scientific = FALSE),
-                       " (~",format_duration(opt_est_seconds), " to ",format_duration(opt_est_seconds*5),
+                       " (~",format_duration_range(opt_est_seconds, opt_est_seconds*5),
                        "). You can change this threshold with the 'ceiling' argument."))
       }
 

@@ -2,7 +2,6 @@
 
 #include <Rcpp.h>
 #include <RcppParallel.h>
-#include <tbb/parallel_sort.h>
 #include <algorithm>
 #include <vector>
 #include <cmath>
@@ -217,6 +216,63 @@ std::string format_time(double seconds) {
   }
 }
 
+// ============================================================================
+//  EXACT PARALLEL TOP-K SELECTION
+// ============================================================================
+// Recursively splits the combination range; each leaf keeps its own exact
+// top-K (by the NA-aware |r| ordering below), and sibling leaves' top-K lists
+// are merged pairwise back up the tree via join(). This is always exact: if a
+// combination is truly in the global top-K, fewer than K combinations beat it
+// ANYWHERE, so fewer than K beat it within its own partition either -- its
+// local rank is always <= K, so it can never fail to survive its own leaf's
+// selection. No partitioning scheme or data distribution can cause a genuine
+// top-K result to be dropped. Total work is O(n log K) instead of a full
+// O(n log n) sort, which matters a lot when K (keep_top, ~100) is tiny next
+// to n (n_combos, often in the hundreds of millions).
+struct TopKWorker : public Worker {
+  const std::vector<float>& results;
+  const int n_top;
+  std::vector<int> local_idx;  // always sorted best-first, size <= n_top
+
+  TopKWorker(const std::vector<float>& results, int n_top)
+    : results(results), n_top(n_top) {}
+
+  TopKWorker(const TopKWorker& other, Split)
+    : results(other.results), n_top(other.n_top) {}
+
+  void operator()(std::size_t begin, std::size_t end) {
+    std::vector<int> chunk(end - begin);
+    std::iota(chunk.begin(), chunk.end(), (int)begin);
+    merge_in(chunk);
+  }
+
+  void join(const TopKWorker& rhs) {
+    merge_in(rhs.local_idx);
+  }
+
+private:
+  bool combo_better(int i1, int i2) const {
+    bool na1 = std::isnan(results[i1]);
+    bool na2 = std::isnan(results[i2]);
+    if (na1 && na2) return false;
+    if (na1) return false;
+    if (na2) return true;
+    return std::abs(results[i1]) > std::abs(results[i2]);
+  }
+
+  void merge_in(const std::vector<int>& incoming) {
+    std::vector<int> merged;
+    merged.reserve(local_idx.size() + incoming.size());
+    merged.insert(merged.end(), local_idx.begin(), local_idx.end());
+    merged.insert(merged.end(), incoming.begin(), incoming.end());
+    int k = std::min((size_t)n_top, merged.size());
+    std::partial_sort(merged.begin(), merged.begin() + k, merged.end(),
+                      [this](int i1, int i2) { return combo_better(i1, i2); });
+    merged.resize(k);
+    local_idx = std::move(merged);
+  }
+};
+
 // [[Rcpp::export]]
 List process_all_combinations_cpp_parallel_float(
     IntegerMatrix data,
@@ -331,28 +387,13 @@ List process_all_combinations_cpp_parallel_float(
   
   TIMESTAMP; // 3
   
-  // Sorting & Output -- full parallel sort (TBB) rather than a single-threaded
-  // partial_sort: on large runs this stage was a serial bottleneck with no
-  // progress indication. A per-thread local-top-K + merge would be faster
-  // still, but the pool handed in here is quality-ranked (best items first)
-  // and the combo enumeration below is lexicographic over that ranking, so
-  // true top-K combinations cluster non-randomly in the enumeration -- a
-  // naive contiguous split could let one thread's local batch silently
-  // exceed its own keep_top and drop genuine top-K results. Full sort has
-  // no such risk.
-  std::vector<int> idx(n_combos);
-  std::iota(idx.begin(), idx.end(), 0);
+  // Sorting & Output -- exact parallel top-K (see TopKWorker above) instead
+  // of a single-threaded partial_sort: on large runs the old sort was a
+  // serial bottleneck with no progress indication.
   int n_top = std::min(keep_top, n_combos);
-
-  tbb::parallel_sort(idx.begin(), idx.end(),
-                    [&results](int i1, int i2) {
-                      bool na1 = std::isnan(results[i1]);
-                      bool na2 = std::isnan(results[i2]);
-                      if (na1 && na2) return false;
-                      if (na1) return false;
-                      if (na2) return true;
-                      return std::abs(results[i1]) > std::abs(results[i2]);
-                    });
+  TopKWorker topk(results, n_top);
+  parallelReduce(0, n_combos, topk);
+  std::vector<int>& idx = topk.local_idx;
 
   TIMESTAMP; // 4
   
@@ -522,22 +563,12 @@ List process_all_combinations_cpp_gram(
 
   TIMESTAMP; // 2
 
-  // Full parallel sort (TBB), not a single-threaded partial_sort -- see the
-  // comment on the equivalent sort in process_all_combinations_cpp_parallel_float
-  // for why a per-thread local-top-K + merge isn't safe here.
-  std::vector<int> idx(n_combos);
-  std::iota(idx.begin(), idx.end(), 0);
+  // Exact parallel top-K (see TopKWorker above) instead of a single-threaded
+  // partial_sort.
   int n_top = std::min(keep_top, n_combos);
-
-  tbb::parallel_sort(idx.begin(), idx.end(),
-                    [&results](int i1, int i2) {
-                      bool na1 = std::isnan(results[i1]);
-                      bool na2 = std::isnan(results[i2]);
-                      if (na1 && na2) return false;
-                      if (na1) return false;
-                      if (na2) return true;
-                      return std::abs(results[i1]) > std::abs(results[i2]);
-                    });
+  TopKWorker topk(results, n_top);
+  parallelReduce(0, n_combos, topk);
+  std::vector<int>& idx = topk.local_idx;
 
   TIMESTAMP; // 3
 
