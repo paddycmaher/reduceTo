@@ -13,9 +13,9 @@ reduceTo(
   r.sq = FALSE,
   generate = TRUE,
   item.set = 1,
-  show.progress = T,
+  show.progress = TRUE,
   cross.validate = 0,
-  optimise = c("progressive", "none"),
+  optimise = TRUE,
   prefilter.ratio = 5,
   opt.n = 5000,
   ceiling = 1e+07,
@@ -50,12 +50,11 @@ internal consistency, an unquoted column name from data, or an external vector
 \item{cross.validate}{Numeric input controlling a data split into Training/Holdout
 sets; if TRUE or 1, uses a 75\%/25\% split (default: FALSE)}
 
-\item{optimise}{Controls heuristic pruning for large item pools, used when
-combinations exceed \code{ceiling}: \code{"progressive"} (default) runs the
-Synergistic RFE optimisation algorithm -- exhaustively scoring small-k combinations
+\item{optimise}{If TRUE (default), runs the Synergistic RFE optimisation algorithm
+when combinations exceed \code{ceiling} -- exhaustively scoring small-k combinations
 and progressively narrowing the item pool, keeping the items with the best achieved
-score at each step; \code{"none"} forces exhaustive search regardless of
-\code{ceiling} (can be slow)}
+score at each step. If FALSE, forces exhaustive search regardless of \code{ceiling}
+(can be slow)}
 
 \item{prefilter.ratio}{Drops items whose relevance (correlation with the target, or
 item-total centrality with no target) is more than \code{prefilter.ratio} times
@@ -68,7 +67,7 @@ optimisation (default: 5000)}
 \item{ceiling}{Combination threshold triggering optimisation (default: 10,000,000).
 A tighter ceiling narrows the item pool further before the final exhaustive search,
 which is faster but leaves less room to recover from an imperfect ranking. In
-testing, \code{optimise = "progressive"} reliably found the true optimum except in
+testing, Synergistic RFE reliably found the true optimum except in
 extreme scenarios -- e.g. items whose value is invisible until combined with several
 (3+) specific others; a more generous ceiling protects against this rare case}
 

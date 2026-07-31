@@ -28,12 +28,11 @@
 #' @param show.progress If TRUE, displays a live progress bar during search (default: TRUE)
 #' @param cross.validate Numeric input controlling a data split into Training/Holdout
 #'   sets; if TRUE or 1, uses a 75%/25% split (default: FALSE)
-#' @param optimise Controls heuristic pruning for large item pools, used when
-#'   combinations exceed \code{ceiling}: \code{"progressive"} (default) runs the
-#'   Synergistic RFE optimisation algorithm -- exhaustively scoring small-k combinations
+#' @param optimise If TRUE (default), runs the Synergistic RFE optimisation algorithm
+#'   when combinations exceed \code{ceiling} -- exhaustively scoring small-k combinations
 #'   and progressively narrowing the item pool, keeping the items with the best achieved
-#'   score at each step; \code{"none"} forces exhaustive search regardless of
-#'   \code{ceiling} (can be slow)
+#'   score at each step. If FALSE, forces exhaustive search regardless of \code{ceiling}
+#'   (can be slow)
 #' @param prefilter.ratio Drops items whose relevance (correlation with the target, or
 #'   item-total centrality with no target) is more than \code{prefilter.ratio} times
 #'   weaker than the strongest item, before optimisation runs. Never prunes below
@@ -43,7 +42,7 @@
 #' @param ceiling Combination threshold triggering optimisation (default: 10,000,000).
 #'   A tighter ceiling narrows the item pool further before the final exhaustive search,
 #'   which is faster but leaves less room to recover from an imperfect ranking. In
-#'   testing, \code{optimise = "progressive"} reliably found the true optimum except in
+#'   testing, Synergistic RFE reliably found the true optimum except in
 #'   extreme scenarios -- e.g. items whose value is invisible until combined with several
 #'   (3+) specific others; a more generous ceiling protects against this rare case
 #' @param scale.vars If TRUE, mean-centers and scales all columns (default: FALSE)
@@ -93,14 +92,13 @@
 #' }
 
 reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALSE, r.sq = FALSE,
-                     generate = TRUE, item.set = 1, show.progress = T, cross.validate = 0,
-                     optimise = c("progressive", "none"), prefilter.ratio = 5,
+                     generate = TRUE, item.set = 1, show.progress = TRUE, cross.validate = 0,
+                     optimise = TRUE, prefilter.ratio = 5,
                      opt.n = 5000, ceiling = 1e7,
                      scale.vars = FALSE, na.rm = TRUE, method = NULL, speed = c("fast", "conservative"),
                      verbose = TRUE){
 
   speed <- match.arg(speed)
-  optimise <- match.arg(optimise)
 
   # Preserve the caller's random state (reduceTo() seeds its own sampling internally)
   if (exists(".Random.seed", envir = globalenv())) {
@@ -881,7 +879,7 @@ reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALS
 
   if (num_combinations > ceiling) {
 
-    if (optimise != "none") {
+    if (optimise) {
 
       # Measure real combinations/sec on this machine to estimate runtime
       if (identical(speed, "fast")) {
@@ -968,7 +966,7 @@ reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALS
 
     } else {
       if (verbose) {
-        message(sprintf("=~ Note: %s combinations exceeds ceiling (%s) but optimise = 'none' -- running exhaustive search anyway. This may be slow.",
+        message(sprintf("=~ Note: %s combinations exceeds ceiling (%s) but optimise = FALSE -- running exhaustive search anyway. This may be slow.",
                         format(num_combinations, big.mark = ",", scientific = FALSE),
                         format(ceiling, big.mark = ",", scientific = FALSE)))
       }

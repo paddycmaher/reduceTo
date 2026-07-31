@@ -6,8 +6,8 @@ test_that("progressive narrowing matches true exhaustive search (speed = 'fast')
   target <- rowMeans(data[, 1:6]) + rnorm(n, 0, 0.3)
 
   r_prog <- reduceTo(data, n.items = 4, target = target, ceiling = 100,
-                     optimise = "progressive", speed = "fast", show.progress = FALSE)
-  r_truth <- reduceTo(data, n.items = 4, target = target, optimise = "none",
+                     optimise = TRUE, speed = "fast", show.progress = FALSE)
+  r_truth <- reduceTo(data, n.items = 4, target = target, optimise = FALSE,
                       ceiling = choose(pool, 4) + 1, show.progress = FALSE)
 
   expect_equal(r_prog$r, r_truth$r, tolerance = 1e-6)
@@ -22,8 +22,8 @@ test_that("progressive narrowing matches true exhaustive search (speed = 'conser
   target <- rowMeans(data[, 1:6]) + rnorm(n, 0, 0.3)
 
   r_prog <- reduceTo(data, n.items = 4, target = target, ceiling = 100,
-                     optimise = "progressive", speed = "conservative", show.progress = FALSE)
-  r_truth <- reduceTo(data, n.items = 4, target = target, optimise = "none",
+                     optimise = TRUE, speed = "conservative", show.progress = FALSE)
+  r_truth <- reduceTo(data, n.items = 4, target = target, optimise = FALSE,
                       ceiling = choose(pool, 4) + 1, show.progress = FALSE)
 
   expect_equal(r_prog$r, r_truth$r, tolerance = 1e-6)
@@ -47,7 +47,7 @@ test_that("progressive narrowing never narrows the pool below n.items", {
   data <- as.data.frame(matrix(rnorm(n * pool), ncol = pool))
   colnames(data) <- paste0("Item_", 1:pool)
 
-  r <- reduceTo(data, n.items = 5, ceiling = 3, optimise = "progressive", show.progress = FALSE)
+  r <- reduceTo(data, n.items = 5, ceiling = 3, optimise = TRUE, show.progress = FALSE)
 
   expect_true(length(r$final_pool_items) >= 5)
   expect_length(r$best_names, 5)
@@ -77,7 +77,7 @@ test_that("progressive narrowing recovers a synergistic/suppressor item set", {
   target <- Z1 + Z2
 
   r <- reduceTo(data, n.items = 6, target = target, ceiling = 50,
-               optimise = "progressive", show.progress = FALSE)
+               optimise = TRUE, show.progress = FALSE)
 
   n_xy <- sum(grepl("^[XY]", r$best_names))
   expect_true(n_xy >= 4)
@@ -107,7 +107,7 @@ test_that("a higher-order (3-group) suppressor structure needs a generous ceilin
   target <- Z1 + Z2 + Z3
 
   r <- reduceTo(data, n.items = 7, target = target, ceiling = 5000000,
-               optimise = "progressive", show.progress = FALSE)
+               optimise = TRUE, show.progress = FALSE)
 
   n_abc <- sum(grepl("^[ABC]", r$best_names))
   expect_true(n_abc >= 5)
