@@ -1317,7 +1317,9 @@ reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALS
     
     results_object$binary_info <- bin_info
   }
-  
+
+  if (show.progress) cat("~{ reduceTo }~ completed\n")
+
   class(results_object) <- "reduced_scale"
   return(results_object)
 }
