@@ -431,7 +431,16 @@ reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALS
       k <- next_k
     }
 
-    if (show.progress) cat("\n")
+    # The last printed round shows the pool ENTERING that round, not the
+    # narrowing it triggers -- if that round's narrowing already satisfies
+    # ceiling, the loop exits with no further round ever printed, so the
+    # actual (narrowed) result never appears anywhere above. State it
+    # explicitly so "pool = 60" on the last visible round doesn't read as
+    # "nothing happened" when it actually converged in that same step.
+    if (show.progress) {
+      final_msg <- sprintf("~{ Synergistic RFE }~ converged: final pool = %d items", length(pool))
+      cat("\r", formatC(final_msg, width = -prog_width), "\n", sep = "")
+    }
 
     return(pool)
   }
