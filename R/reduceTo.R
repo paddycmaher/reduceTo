@@ -298,6 +298,25 @@ reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALS
     pool_size
   }
 
+  # perform_synergy_ranked_elimination recomputes each round's item ranking
+  # from scratch (item_best isn't accumulated across rounds), so a round
+  # whose scoring doesn't itself trigger narrowing for the round after it is
+  # pure waste: its ranking gets fully superseded the moment the next round
+  # runs its own fresh ranking, with zero effect on which items survive.
+  # Given the pool's current size, this jumps straight to the smallest k
+  # whose scoring WILL matter (i.e. actually cause the following round to
+  # need narrowing), skipping the dead rounds in between -- same final pool,
+  # same final k, just without wastefully scoring the no-op rounds first.
+  skip_to_meaningful_k <- function(pool_size, k, n.items, ceiling) {
+    while (k < n.items) {
+      next_k <- min(k + 1, n.items)
+      budget <- if (next_k >= n.items) ceiling else ROUND_BUDGET
+      if (choose(pool_size, next_k) > budget) break
+      k <- next_k
+    }
+    k
+  }
+
   # Synergy-Ranked Recursive Feature Elimination (Synergistic RFE): exhaustively
   # scores every combination at a small k, ranks items by their best achieved
   # score, and drops the weakest before growing k -- until the pool is small
@@ -344,6 +363,7 @@ reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALS
     while (choose(length(pool), n.items) > ceiling && round_i < max_rounds) {
       round_i <- round_i + 1
       n_pool <- length(pool)
+      k <- skip_to_meaningful_k(n_pool, k, n.items, ceiling)
 
       if (show.progress) {
         msg <- sprintf("~{ Synergistic RFE }~ scoring at k = %d, new pool = %d", k, n_pool)
