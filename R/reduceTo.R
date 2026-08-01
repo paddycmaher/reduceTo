@@ -366,7 +366,7 @@ reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALS
       k <- skip_to_meaningful_k(n_pool, k, n.items, ceiling)
 
       if (show.progress) {
-        msg <- sprintf("~{ Synergistic RFE }~ scoring at k = %d, new pool = %d", k, n_pool)
+        msg <- sprintf("~{ Synergistic RFE }~ scoring at k = %d from pool = %d", k, n_pool)
         if (nchar(msg) > prog_width) msg <- substr(msg, 1, prog_width)
         cat("\r", formatC(msg, width = -prog_width), sep = "")
         flush.console()
@@ -438,7 +438,7 @@ reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALS
     # explicitly so "pool = 60" on the last visible round doesn't read as
     # "nothing happened" when it actually converged in that same step.
     if (show.progress) {
-      final_msg <- sprintf("~{ Synergistic RFE }~ converged: final pool = %d items", length(pool))
+      final_msg <- sprintf("~{ Synergistic RFE }~ converged: optimised search space to %d items", length(pool))
       cat("\r", formatC(final_msg, width = -prog_width), "\n", sep = "")
     }
 
@@ -1042,8 +1042,19 @@ reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALS
 
       p1 <- grow_pool_to_combos(tiny_rate * TARGET_CALIB_TIME, p0, ncol(data))
       if (p1 > p0) {
-        grown <- run_calib_at(p1)
-        combos_per_sec <- grown$combos / max(grown$elapsed, 1e-6)
+        # Repeat the sized probe rather than timing it once: each repeat
+        # scores the identical combination set, so this is just extra timing
+        # samples of the same work, not new work. A stray context switch,
+        # page fault, or GC pause can only ever make a single sample look
+        # SLOWER than true throughput, never faster -- so the max across a
+        # few repeats discards that noise and reflects genuinely achievable
+        # speed, rather than being dragged down by an unlucky sample.
+        N_CALIB_REPEATS <- 3
+        rates <- vapply(seq_len(N_CALIB_REPEATS), function(i) {
+          r <- run_calib_at(p1)
+          r$combos / max(r$elapsed, 1e-6)
+        }, numeric(1))
+        combos_per_sec <- max(rates)
       } else {
         combos_per_sec <- tiny_rate
       }
@@ -1063,11 +1074,11 @@ reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALS
       if (verbose) {
         message(paste0("=~ This task would generate ",
                        format(num_combinations, big.mark = ",",scientific = FALSE),
-                       " combinations to compare (~",format_duration_range(est_seconds, est_seconds*5),
+                       " combinations to compare (~",format_duration_range(est_seconds/2, est_seconds*2),
                        " with N = ",format(nrow(data), big.mark = ",",scientific = FALSE) ,
                        "). \n=~ Combinations will be reduced to below ",
                        format(ceiling, big.mark = ",",scientific = FALSE),
-                       " (~",format_duration_range(opt_est_seconds, opt_est_seconds*5),
+                       " (~",format_duration_range(opt_est_seconds/2, opt_est_seconds*2),
                        " to compare) with Synergistic RFE.",
                        " You can change this threshold with the 'ceiling' argument."))
         if (!is.null(prefilter_message)) message(prefilter_message)
