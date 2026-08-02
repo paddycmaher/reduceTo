@@ -17,7 +17,7 @@ test_that("optimise = TRUE (default) triggers optimisation when combinations exc
 
   expect_message(
     reduceTo(data, n.items = 4, ceiling = 5, show.progress = FALSE),
-    "This task would generate"
+    "This would generate"
   )
 })
 

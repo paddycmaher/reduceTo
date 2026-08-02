@@ -492,6 +492,7 @@ reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALS
     if (used_fast_path) {
       # Score via the Gram-matrix shortcut (missing values mean-imputed for search only)
       gc_components <- build_gram_components(data, targ)
+      mark_time("gram_matrix_build")
 
       cpp_result <- process_all_combinations_cpp_gram(
         gram = gc_components$gram,
@@ -506,8 +507,10 @@ reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALS
         keep_top = keep_top,
         show_progress = show.progress
       )
+      mark_time("cpp_scoring_call")
     } else {
       compressed_data <- compress_for_cpp(data)
+      mark_time("data_compression")
 
       cpp_result <- process_all_combinations_cpp_parallel_float(
         data = compressed_data,
@@ -519,6 +522,7 @@ reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALS
         keep_top = keep_top,
         show_progress = show.progress
       )
+      mark_time("cpp_scoring_call")
     }
 
     # Convert to data.frame
@@ -529,37 +533,72 @@ reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALS
     )
 
     # Recompute exact statistics for the top `keep_top` combinations from the
-    # true data (both scoring engines above work from approximated data)
+    # true data (both scoring engines above work from approximated data).
+    # Vectorized: rather than looping rowMeans()/cor() once per combination
+    # (each paying its own R-interpreter overhead), build one N x keep_top
+    # "membership matrix" (1 where an item is used by that combination) and
+    # get every combination's score in a single matrix multiply, then every
+    # combination's correlation in a single cor() call.
     {
+      n_top <- nrow(leaderboard)
       top_combos <- strsplit(leaderboard$combination, ',')
+      local_cols_list <- lapply(top_combos, function(cids) match(as.numeric(cids), original_indices))
 
-      refined_r <- numeric(nrow(leaderboard))
-      if (is_binary) {
-        binarised_r <- numeric(nrow(leaderboard))
-        cutoff <- numeric(nrow(leaderboard))
-        youden_j <- numeric(nrow(leaderboard))
-        auc <- numeric(nrow(leaderboard))
+      membership <- matrix(0L, nrow = ncol(data), ncol = n_top)
+      membership[cbind(unlist(local_cols_list), rep(seq_len(n_top), each = n.items))] <- 1L
+
+      data_mat <- as.matrix(data)
+      mark_time("membership_matrix")
+
+      # Zeroed-NA sum and valid-item count per row per combination, both via
+      # matrix multiply. Plain data_mat %*% membership would be wrong here:
+      # in R, NA * 0 is NA, so any row with an NA ANYWHERE in the pool would
+      # contaminate every combination's sum, not just combinations that
+      # actually use that item -- zeroing NAs first avoids that.
+      valid_mat <- (!is.na(data_mat)) * 1
+      data_zeroed <- data_mat
+      data_zeroed[is.na(data_mat)] <- 0
+
+      sum_matrix <- data_zeroed %*% membership
+      count_matrix <- valid_mat %*% membership
+
+      if (na.rm) {
+        # Pro-rated mean of whichever items were valid for that row, scaled
+        # back up to n.items -- matches rowMeans(..., na.rm = TRUE) * n.items
+        scores_matrix <- (sum_matrix / count_matrix) * n.items
+      } else {
+        # Matches rowMeans(..., na.rm = FALSE) * n.items: NA unless every
+        # selected item was present for that row
+        scores_matrix <- sum_matrix
+        scores_matrix[count_matrix < n.items] <- NA
       }
+      mark_time("vectorised_scoring")
 
-      for (i in 1:nrow(leaderboard)) {
-        combo_indices <- as.numeric(top_combos[[i]])
-        local_cols <- match(combo_indices, original_indices)
-        scores <- rowMeans(data[, local_cols, drop = FALSE], na.rm = na.rm) * n.items
-
-        refined_r[i] <- suppressWarnings(cor(scores, targ, use = "pairwise.complete.obs"))
-
-        if (is_binary) {
-          cutoff_info <- find_optimal_cutoff_binary(scores, targ, optimize_for)
-          binarised_r[i] <- cutoff_info$binarised_r
-          cutoff[i] <- cutoff_info$optimal_integer_cutoff
-          youden_j[i] <- cutoff_info$youden_j
-          auc[i] <- compute_auc(scores, targ)
-        }
-      }
+      refined_r <- as.vector(suppressWarnings(cor(scores_matrix, targ, use = "pairwise.complete.obs")))
+      mark_time("vectorised_correlation")
 
       leaderboard$r <- refined_r
 
       if (is_binary) {
+        binarised_r <- numeric(n_top)
+        cutoff <- numeric(n_top)
+        youden_j <- numeric(n_top)
+        auc <- numeric(n_top)
+
+        # Per-combination cutoff search isn't linear algebra (each needs its
+        # own sort/threshold search over that combination's score
+        # distribution), so this part stays a loop -- but it no longer pays
+        # for rowMeans() inside it, since scores_matrix is already computed
+        for (i in seq_len(n_top)) {
+          scores_i <- scores_matrix[, i]
+          cutoff_info <- find_optimal_cutoff_binary(scores_i, targ, optimize_for)
+          binarised_r[i] <- cutoff_info$binarised_r
+          cutoff[i] <- cutoff_info$optimal_integer_cutoff
+          youden_j[i] <- cutoff_info$youden_j
+          auc[i] <- compute_auc(scores_i, targ)
+        }
+        mark_time("binary_metrics")
+
         leaderboard$`>=` <- cutoff
         leaderboard$binarised_r <- binarised_r
         leaderboard$youden_j <- youden_j
@@ -568,6 +607,7 @@ reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALS
         # Re-rank by the chosen metric
         leaderboard <- leaderboard[order(abs(leaderboard[[ranking_metric]]),
                                          decreasing = TRUE), ]
+        mark_time("binary_reranking")
       }
     }
 
@@ -986,7 +1026,7 @@ reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALS
         p
       }
 
-      TINY_CALIB_COMBOS <- 100000
+      TINY_CALIB_COMBOS <- 2000000
       TARGET_CALIB_TIME <- 0.1  # seconds
 
       if (identical(speed, "fast")) {
@@ -1072,14 +1112,15 @@ reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALS
       opt_est_seconds <- predicted_final_combos / combos_per_sec
 
       if (verbose) {
-        message(paste0("=~ This task would generate ",
+        message(paste0("=~ This would generate ",
                        format(num_combinations, big.mark = ",",scientific = FALSE),
                        " combinations to compare (~",format_duration_range(est_seconds/2, est_seconds*2),
                        " with N = ",format(nrow(data), big.mark = ",",scientific = FALSE) ,
-                       "). \n=~ Combinations will be reduced to below ",
+                       "). \n=~ Synergistic RFE will be used to reduce combinations to below ",
                        format(ceiling, big.mark = ",",scientific = FALSE),
-                       " (~",format_duration_range(opt_est_seconds/2, opt_est_seconds*2),
-                       " to compare) with Synergistic RFE.",
+                       " (search space: ",n.items," items from ",predicted_final_pool_size,
+                       "; ~",format_duration_range(opt_est_seconds/2, opt_est_seconds*2),
+                       ").",
                        " You can change this threshold with the 'ceiling' argument."))
         if (!is.null(prefilter_message)) message(prefilter_message)
       }

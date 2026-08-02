@@ -37,7 +37,7 @@ test_that("progressive narrowing is the default optimise method", {
 
   expect_message(
     reduceTo(data, n.items = 4, ceiling = 5, show.progress = FALSE),
-    "This task would generate"
+    "This would generate"
   )
 })
 
