@@ -616,6 +616,11 @@ reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALS
         # distribution), so this stays a loop -- but each iteration now
         # groups by unique value (U, not N) instead of scanning all N rows,
         # and computes cutoff search + AUC together from one shared grouping
+        if (show.progress) {
+          bc_width <- max(getOption("width", 80L) - 1L, 20L)
+          cat("\r", formatC("~{  binaryCutoff  }~ searching", width = -bc_width), sep = "")
+          flush.console()
+        }
         for (i in seq_len(n_top)) {
           m <- compute_binary_metrics(scores_matrix[, i], targ, optimize_for)
           binarised_r[i] <- m$binarised_r
@@ -1393,7 +1398,12 @@ reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALS
     results_object$binary_info <- bin_info
   }
 
-  if (show.progress) cat("~{    reduceTo    }~ completed\n")
+  # "\r" + full-width padding overwrites the "~{ binaryCutoff }~ searching"
+  # line (if one was printed) rather than leaving it dangling above this
+  if (show.progress) {
+    completed_width <- max(getOption("width", 80L) - 1L, 20L)
+    cat("\r", formatC("~{    reduceTo    }~ completed", width = -completed_width), "\n", sep = "")
+  }
 
   class(results_object) <- "reduced_scale"
   return(results_object)
