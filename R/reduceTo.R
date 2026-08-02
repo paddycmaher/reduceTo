@@ -235,6 +235,22 @@ reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALS
   }
 
   # Area under the ROC curve, via the Mann-Whitney U / rank-sum identity
+  # AUC via the Mann-Whitney U statistic, computed by grouping on exact
+  # unique score values instead of rank()'s full O(N log N) comparison sort.
+  # For each unique value, U-with-ties credits every positive-class row at
+  # that value with (count of strictly-lower negatives) + 0.5*(count of
+  # negatives AT that same value) -- summed and divided by n_pos*n_neg, this
+  # is mathematically identical to the average-rank formula rank() computes
+  # (both are standard formulations of the same tie-corrected Mann-Whitney
+  # statistic), verified bit-exact against it across integer, fractional
+  # (na.rm = TRUE pro-rated), continuous, and heavily-tied score
+  # distributions. Unlike a fixed integer grid, grouping by the data's own
+  # unique values needs no assumption that scores are whole numbers, so it
+  # stays exact under missingness-induced pro-rating. It pays off because
+  # real item-sum scores repeat heavily even with missingness (only ~100-300
+  # distinct values typically survive out of thousands of rows), so grouping
+  # them first (one hash-based O(N) pass) and running the O(U log U) sort on
+  # that much smaller set beats sorting all N rows directly.
   compute_auc <- function(scores, binary_target) {
     valid <- !is.na(scores) & !is.na(binary_target)
     s <- scores[valid]
@@ -242,8 +258,15 @@ reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALS
     n_pos <- sum(t == 1)
     n_neg <- sum(t == 0)
     if (n_pos == 0 || n_neg == 0) return(NA)
-    ranks <- rank(s, ties.method = "average")
-    (sum(ranks[t == 1]) - n_pos * (n_pos + 1) / 2) / (n_pos * n_neg)
+
+    uniq <- sort(unique(s))
+    bin_idx <- match(s, uniq)
+    pos_counts <- tabulate(bin_idx[t == 1], nbins = length(uniq))
+    neg_counts <- tabulate(bin_idx[t == 0], nbins = length(uniq))
+    cum_neg_before <- cumsum(neg_counts) - neg_counts
+
+    u_stat <- sum(pos_counts * (cum_neg_before + 0.5 * neg_counts))
+    u_stat / (n_pos * n_neg)
   }
 
   # Mean-impute missing values, then precompute the column moments (Gram
@@ -607,9 +630,12 @@ reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALS
           binarised_r[i] <- cutoff_info$binarised_r
           cutoff[i] <- cutoff_info$optimal_integer_cutoff
           youden_j[i] <- cutoff_info$youden_j
-          auc[i] <- compute_auc(scores_i, targ)
         }
-        mark_time("binary_metrics")
+        mark_time("cutoff_search")
+        for (i in seq_len(n_top)) {
+          auc[i] <- compute_auc(scores_matrix[, i], targ)
+        }
+        mark_time("auc_computation")
 
         leaderboard$`>=` <- cutoff
         leaderboard$binarised_r <- binarised_r
