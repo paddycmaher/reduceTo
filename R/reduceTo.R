@@ -40,7 +40,7 @@
 #' @param opt.n The maximum number of cases (rows) to subsample during heuristic
 #'   optimisation (default: 20000). Raising this improves both average recovered
 #'   r and run-to-run consistency at negligible time cost, since the optimisation
-#'   stage's cost is typically dominated by \code{ceiling}/\code{round.budget}
+#'   stage's cost is typically dominated by \code{ceiling}/\code{rfe.budget}
 #'   rather than row count
 #' @param ceiling Combination threshold triggering optimisation (default: 10,000,000).
 #'   A tighter ceiling narrows the item pool further before the final exhaustive search,
@@ -48,6 +48,13 @@
 #'   testing, Synergistic RFE reliably found the true optimum except in
 #'   extreme scenarios -- e.g. items whose value is invisible until combined with several
 #'   (3+) specific others; a more generous ceiling protects against this rare case
+#' @param rfe.budget Combination threshold per intermediate Synergistic RFE round
+#'   (default: 10,000,000), as opposed to \code{ceiling}, which bounds only the
+#'   final search. Raising it lets each narrowing round exhaustively score a larger
+#'   slice of the pool before dropping items, which can recover items that a
+#'   tighter round would have pruned too early -- at a real, roughly linear time
+#'   cost per round. Empirically, gains taper off well before \code{ceiling}-scale
+#'   values; raising it far beyond the default is rarely worth the extra time
 #' @param scale.vars If TRUE, mean-centers and scales all columns (default: FALSE)
 #' @param na.rm If TRUE, handles missing values via pairwise deletion (default: TRUE)
 #' @param method Metric for ranking combinations (default: NULL for auto-selection):
@@ -97,7 +104,7 @@
 reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALSE, r.sq = FALSE,
                      generate = TRUE, item.set = 1, show.progress = TRUE, cross.validate = 0,
                      optimise = TRUE, prefilter.ratio = 5,
-                     opt.n = 20000, ceiling = 1e7, round.budget = 1e7,
+                     opt.n = 20000, ceiling = 1e7, rfe.budget = 1e7,
                      scale.vars = FALSE, na.rm = TRUE, method = NULL, speed = c("fast", "conservative"),
                      verbose = TRUE){
 
@@ -286,9 +293,7 @@ reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALS
 
   # Bounds intermediate scoring cost during Synergistic RFE, not final pool
   # size (tuned empirically against recovery-rate tests, not a formula).
-  # TEMPORARY: exposed as the round.budget argument for experimentation --
-  # not documented yet, not a stable part of the API
-  ROUND_BUDGET <- round.budget
+  RFE_BUDGET <- rfe.budget
 
   # Largest pool size at or under `floor_size` whose choose(pool_size, k)
   # doesn't exceed `budget`. Pure size arithmetic, no data or scoring
@@ -317,7 +322,7 @@ reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALS
     while (choose(pool_size, n.items) > ceiling && round_i < max_rounds) {
       round_i <- round_i + 1
       next_k <- min(k + 1, n.items)
-      budget_for_next <- if (next_k >= n.items) ceiling else ROUND_BUDGET
+      budget_for_next <- if (next_k >= n.items) ceiling else RFE_BUDGET
       pool_size <- largest_pool_under_budget(pool_size, next_k, budget_for_next, n.items)
       k <- next_k
     }
@@ -336,7 +341,7 @@ reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALS
   skip_to_meaningful_k <- function(pool_size, k, n.items, ceiling) {
     while (k < n.items) {
       next_k <- min(k + 1, n.items)
-      budget <- if (next_k >= n.items) ceiling else ROUND_BUDGET
+      budget <- if (next_k >= n.items) ceiling else RFE_BUDGET
       if (choose(pool_size, next_k) > budget) break
       k <- next_k
     }
@@ -445,12 +450,12 @@ reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALS
       # (at next_k) stays within budget -- narrowing based on this round's
       # own k would be too late, since this round's score already happened
       # at the current (un-narrowed) pool size. When the next round is the
-      # real target k, narrow to `ceiling` directly (not ROUND_BUDGET) --
-      # ROUND_BUDGET only bounds the cost of intermediate scoring calls, it
+      # real target k, narrow to `ceiling` directly (not RFE_BUDGET) --
+      # RFE_BUDGET only bounds the cost of intermediate scoring calls, it
       # has no business capping the final pool below what the caller's own
       # ceiling would otherwise allow.
       next_k <- min(k + 1, n.items)
-      budget_for_next <- if (next_k >= n.items) ceiling else ROUND_BUDGET
+      budget_for_next <- if (next_k >= n.items) ceiling else RFE_BUDGET
       target_pool_size <- largest_pool_under_budget(n_pool, next_k, budget_for_next, n.items)
 
       pool <- ranked[1:target_pool_size]

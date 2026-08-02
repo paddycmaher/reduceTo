@@ -19,7 +19,7 @@ reduceTo(
   prefilter.ratio = 5,
   opt.n = 20000,
   ceiling = 1e+07,
-  round.budget = 1e+07,
+  rfe.budget = 1e+07,
   scale.vars = FALSE,
   na.rm = TRUE,
   method = NULL,
@@ -65,7 +65,7 @@ weaker than the strongest item, before optimisation runs. Never prunes below
 \item{opt.n}{The maximum number of cases (rows) to subsample during heuristic
 optimisation (default: 20000). Raising this improves both average recovered
 r and run-to-run consistency at negligible time cost, since the optimisation
-stage's cost is typically dominated by \code{ceiling}/\code{round.budget}
+stage's cost is typically dominated by \code{ceiling}/\code{rfe.budget}
 rather than row count}
 
 \item{ceiling}{Combination threshold triggering optimisation (default: 10,000,000).
@@ -74,6 +74,14 @@ which is faster but leaves less room to recover from an imperfect ranking. In
 testing, Synergistic RFE reliably found the true optimum except in
 extreme scenarios -- e.g. items whose value is invisible until combined with several
 (3+) specific others; a more generous ceiling protects against this rare case}
+
+\item{rfe.budget}{Combination threshold per intermediate Synergistic RFE round
+(default: 10,000,000), as opposed to \code{ceiling}, which bounds only the
+final search. Raising it lets each narrowing round exhaustively score a larger
+slice of the pool before dropping items, which can recover items that a
+tighter round would have pruned too early -- at a real, roughly linear time
+cost per round. Empirically, gains taper off well before \code{ceiling}-scale
+values; raising it far beyond the default is rarely worth the extra time}
 
 \item{scale.vars}{If TRUE, mean-centers and scales all columns (default: FALSE)}
 
