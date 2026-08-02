@@ -133,7 +133,7 @@ result <- reduceTo(
 | `item.names` | Return names vs indices | `FALSE` |
 | `generate` | Compute scores for best set | `TRUE` |
 | `cross.validate` | Enable train/holdout split | `FALSE` |
-| `method` | Ranking metric (binary: `"r"`, `"youden_j"`, `"binarised_r"`) | `NULL` |
+| `method` | Ranking metric (binary: `"r"`, `"youden_j"`, `"binarised_r"`, `"auc"`) | `NULL` |
 | `show.progress` | Displays live progress bar and optimisation-stage updates | `TRUE` |
 | `verbose` | Print informational messages (binary detection, optimisation triggers, prefilter notices, etc.) -- set `FALSE` to silence these while keeping `show.progress`'s live updates | `TRUE` |
 
@@ -253,7 +253,7 @@ The default optimisation settings were empirically calibrated in both real and d
 - **Point-biserial r**: Equivalent to Cohen's d, correlates with AUC
 - **Youden's J**: Maximises sensitivity + specificity - 1
 - **Binarised r**: Applies optimal cutoff first, may find different solutions
-- **AUC**: Threshold-independent; always reported alongside the others (`leaderboard$auc`, `binary_info$results$auc`) but not selectable via `method=`, since it can't be scored via the same fast moment-based shortcuts as the other metrics
+- **AUC**: Threshold-independent; always reported alongside the others (`leaderboard$auc`, `binary_info$results$auc`) and selectable via `method = "auc"`
 
 ------------------------------------------------------------------------
 

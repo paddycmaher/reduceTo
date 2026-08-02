@@ -58,8 +58,9 @@
 #' @param scale.vars If TRUE, mean-centers and scales all columns (default: FALSE)
 #' @param na.rm If TRUE, handles missing values via pairwise deletion (default: TRUE)
 #' @param method Metric for ranking combinations (default: NULL for auto-selection):
-#'   "r" for Pearson correlation, "youden_j" for Youden's Index, or "binarised_r"
-#'   for correlation of binarised sum score (binary targets)
+#'   "r" for Pearson correlation, "youden_j" for Youden's Index, "binarised_r"
+#'   for correlation of binarised sum score, or "auc" for the area under the
+#'   ROC curve (binary targets only; ignored otherwise)
 #' @param speed \code{"fast"} (default) scores combinations using a Gram-matrix
 #'   shortcut, mean-imputing missing values for search only -- reported statistics are
 #'   always recomputed from the true data. \code{"conservative"} scores every
@@ -892,11 +893,11 @@ reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALS
   # Determine ranking metric and optimization method
   if (is_binary) {
     # Validate method for binary targets
-    valid_binary_methods <- c("r", "binarised_r", "youden_j")
+    valid_binary_methods <- c("r", "binarised_r", "youden_j", "auc")
 
     if (is.null(method)) {
       ranking_metric <- "youden_j"
-      if (verbose) message("=~= Ranking combinations by Youden's J (use method = 'binarised_r' or 'r' to change)")
+      if (verbose) message("=~= Ranking combinations by Youden's J (use method = 'binarised_r', 'r', or 'auc' to change)")
     } else if (method %in% valid_binary_methods) {
       ranking_metric <- method
     } else {
@@ -916,9 +917,10 @@ reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALS
     }
   }
 
-  # Youden's J needs a wider leaderboard: earlier stages rank by r, which can
-  # discard combinations with weak r but strong classification performance
-  leaderboard_length <- if (identical(ranking_metric, "youden_j")) 1000 else 100
+  # Youden's J and AUC need a wider leaderboard: earlier stages rank by r,
+  # which can discard combinations with weak r but strong classification
+  # performance
+  leaderboard_length <- if (ranking_metric %in% c("youden_j", "auc")) 1000 else 100
 
   mark_time("target_resolution")
   
@@ -1424,9 +1426,10 @@ print.reduced_scale <- function(x, ...) {
   cat("\n=~=", type_str, "Short-Form Scale Results =~=\n")
   
   if (is_binary) {
-    metric_map <- c("youden_j" = "Youden's J", 
-                    "binarised_r" = "Binarised Correlation", 
-                    "sum_score_r" = "Sum Score Correlation")
+    metric_map <- c("youden_j" = "Youden's J",
+                    "binarised_r" = "Binarised Correlation",
+                    "sum_score_r" = "Sum Score Correlation",
+                    "auc" = "AUC")
     
     m_name <- metric_map[x$binary_info$ranking_metric]
     if(is.na(m_name)) m_name <- x$binary_info$ranking_metric

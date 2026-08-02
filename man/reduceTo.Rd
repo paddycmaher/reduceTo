@@ -88,8 +88,9 @@ values; raising it far beyond the default is rarely worth the extra time}
 \item{na.rm}{If TRUE, handles missing values via pairwise deletion (default: TRUE)}
 
 \item{method}{Metric for ranking combinations (default: NULL for auto-selection):
-"r" for Pearson correlation, "youden_j" for Youden's Index, or "binarised_r"
-for correlation of binarised sum score (binary targets)}
+"r" for Pearson correlation, "youden_j" for Youden's Index, "binarised_r"
+for correlation of binarised sum score, or "auc" for the area under the
+ROC curve (binary targets only; ignored otherwise)}
 
 \item{speed}{\code{"fast"} (default) scores combinations using a Gram-matrix
 shortcut, mean-imputing missing values for search only -- reported statistics are
