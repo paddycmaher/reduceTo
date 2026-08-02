@@ -94,7 +94,7 @@
 reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALSE, r.sq = FALSE,
                      generate = TRUE, item.set = 1, show.progress = TRUE, cross.validate = 0,
                      optimise = TRUE, prefilter.ratio = 5,
-                     opt.n = 5000, ceiling = 1e7,
+                     opt.n = 5000, ceiling = 1e7, round.budget = 1e6,
                      scale.vars = FALSE, na.rm = TRUE, method = NULL, speed = c("fast", "conservative"),
                      verbose = TRUE){
 
@@ -269,11 +269,9 @@ reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALS
 
   # Bounds intermediate scoring cost during Synergistic RFE, not final pool
   # size (tuned empirically against recovery-rate tests, not a formula).
-  # Defined once here (rather than inside perform_synergy_ranked_elimination)
-  # so predict_narrowing_final_pool_size below can replay the exact same
-  # round-sizing decisions when estimating runtime, without duplicating the
-  # constant and risking drift between the real run and the estimate.
-  ROUND_BUDGET <- 1000000
+  # TEMPORARY: exposed as the round.budget argument for experimentation --
+  # not documented yet, not a stable part of the API
+  ROUND_BUDGET <- round.budget
 
   # Largest pool size at or under `floor_size` whose choose(pool_size, k)
   # doesn't exceed `budget`. Pure size arithmetic, no data or scoring

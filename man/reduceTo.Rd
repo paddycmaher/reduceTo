@@ -19,6 +19,7 @@ reduceTo(
   prefilter.ratio = 5,
   opt.n = 5000,
   ceiling = 1e+07,
+  round.budget = 1e+06,
   scale.vars = FALSE,
   na.rm = TRUE,
   method = NULL,
