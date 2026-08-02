@@ -366,7 +366,7 @@ reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALS
       k <- skip_to_meaningful_k(n_pool, k, n.items, ceiling)
 
       if (show.progress) {
-        msg <- sprintf("~{ Synergistic RFE }~ scoring at k = %d from pool = %d", k, n_pool)
+        msg <- sprintf("~{ SynergisticRFE }~ scoring at k = %d from pool = %d", k, n_pool)
         if (nchar(msg) > prog_width) msg <- substr(msg, 1, prog_width)
         cat("\r", formatC(msg, width = -prog_width), sep = "")
         flush.console()
@@ -438,7 +438,7 @@ reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALS
     # explicitly so "pool = 60" on the last visible round doesn't read as
     # "nothing happened" when it actually converged in that same step.
     if (show.progress) {
-      final_msg <- sprintf("~{ Synergistic RFE }~ converged: optimised search space to %d items", length(pool))
+      final_msg <- sprintf("~{ SynergisticRFE }~ converged: optimised search space to %d items", length(pool))
       cat("\r", formatC(final_msg, width = -prog_width), "\n", sep = "")
     }
 
@@ -986,7 +986,7 @@ reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALS
         p
       }
 
-      TINY_CALIB_COMBOS <- 2000
+      TINY_CALIB_COMBOS <- 100000
       TARGET_CALIB_TIME <- 0.1  # seconds
 
       if (identical(speed, "fast")) {
@@ -1049,7 +1049,7 @@ reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALS
         # SLOWER than true throughput, never faster -- so the max across a
         # few repeats discards that noise and reflects genuinely achievable
         # speed, rather than being dragged down by an unlucky sample.
-        N_CALIB_REPEATS <- 3
+        N_CALIB_REPEATS <- 1
         rates <- vapply(seq_len(N_CALIB_REPEATS), function(i) {
           r <- run_calib_at(p1)
           r$combos / max(r$elapsed, 1e-6)
@@ -1112,7 +1112,11 @@ reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALS
   
   # Warn if items use very different scales (e.g. mixing 0-1 and 1-7 items)
   if (!scale.vars) {
-    col_ranges <- apply(data, 2, function(x) diff(range(x, na.rm = TRUE)))
+    # apply(data, 2, ...) on a data.frame silently coerces the whole thing to
+    # a matrix first (a full copy) just to iterate columns -- indexing
+    # data[, i] directly avoids that copy and works the same for a matrix or
+    # data.frame input
+    col_ranges <- vapply(seq_len(ncol(data)), function(i) diff(range(data[, i], na.rm = TRUE)), numeric(1))
 
     if (max(col_ranges) / min(col_ranges) > 2 && verbose) {
       message(sprintf("Note: Wide variation in item scales detected (Ranges: %s to %s).\nConsider setting 'scale.vars = TRUE' to ensure consistent weighting.",
@@ -1318,7 +1322,7 @@ reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALS
     results_object$binary_info <- bin_info
   }
 
-  if (show.progress) cat("~{ reduceTo }~ completed\n")
+  if (show.progress) cat("~{    reduceTo    }~ completed\n")
 
   class(results_object) <- "reduced_scale"
   return(results_object)
