@@ -145,56 +145,68 @@ reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALS
     valid_idx <- !is.na(scores) & !is.na(binary_target)
     scores_clean <- scores[valid_idx]
     target_clean <- binary_target[valid_idx]
-    
+
     # Only test integers within observed range for efficiency
     score_range <- range(scores_clean)
     possible_integers <- floor(score_range[1]):ceiling(score_range[2])
-    
+
+    # Vectorized cutoff search: tp(c)/tn(c)/fp(c)/fn(c) for EVERY candidate
+    # cutoff at once, via two outer()+colSums() calls instead of looping
+    # sapply(possible_integers, ...) and re-summing length-N boolean vectors
+    # once per candidate. tp(c)+fn(c) and tn(c)+fp(c) are constants (n_pos,
+    # n_neg) regardless of c, so both branches below can be derived from
+    # these four count vectors without ever materializing a per-cutoff
+    # binarised vector.
+    pos_scores <- scores_clean[target_clean == 1]
+    neg_scores <- scores_clean[target_clean == 0]
+    n_pos <- length(pos_scores)
+    n_neg <- length(neg_scores)
+
+    tp_counts <- colSums(outer(pos_scores, possible_integers, `>=`))
+    tn_counts <- colSums(outer(neg_scores, possible_integers, `<`))
+    fp_counts <- n_neg - tn_counts
+    fn_counts <- n_pos - tp_counts
+
     if (optimize_for == "binarised_r") {
-      # Optimize for maximum binarised correlation
-      calculate_metric <- function(cutoff) {
-        binarised <- as.numeric(scores_clean >= cutoff)
-        if (sd(binarised) == 0) return(NA)  # No variance
-        return(cor(binarised, target_clean))
-      }
-      
-      metric_values <- sapply(possible_integers, calculate_metric)
+      # cor() of two binary (0/1) variables is exactly the phi coefficient,
+      # computable directly from the 2x2 contingency counts -- avoids a
+      # per-cutoff cor() call entirely
+      phi_num <- tp_counts * tn_counts - fp_counts * fn_counts
+      phi_denom <- sqrt((tp_counts + fp_counts) * (tp_counts + fn_counts) *
+                         (tn_counts + fp_counts) * (tn_counts + fn_counts))
+      metric_values <- ifelse(phi_denom == 0, NA, phi_num / phi_denom)
       valid_cutoffs <- !is.na(metric_values)
-      
+
       if (!any(valid_cutoffs)) {
         optimal_cutoff <- median(possible_integers)
       } else {
-        best_idx <- which.max(abs(metric_values[valid_cutoffs]))
+        # Different cutoffs achieving mathematically-equal |correlation| is
+        # common, not a rare edge case -- an exact which.max() comparison
+        # then picks whichever tied candidate happens to round a hair
+        # higher, which is sensitive to the computation path (this direct
+        # formula vs a per-cutoff cor() call) even though both are
+        # numerically correct. Treating near-ties as ties and deterministically
+        # keeping the smallest cutoff among them is robust to that noise.
+        vm <- abs(metric_values[valid_cutoffs])
+        best_idx <- which(vm >= max(vm) - 1e-9)[1]
         optimal_cutoff <- possible_integers[valid_cutoffs][best_idx]
       }
-      
+
     } else {  # optimize_for == "youden_j"
-      # Optimize for maximum Youden's J
-      calculate_youden <- function(cutoff) {
-        binarised <- as.numeric(scores_clean >= cutoff)
-        tp <- sum(binarised == 1 & target_clean == 1)
-        tn <- sum(binarised == 0 & target_clean == 0)
-        fp <- sum(binarised == 1 & target_clean == 0)
-        fn <- sum(binarised == 0 & target_clean == 1)
-        
-        if ((tp + fn) == 0 || (tn + fp) == 0) return(NA)
-        
-        sensitivity <- tp / (tp + fn)
-        specificity <- tn / (tn + fp)
-        return(sensitivity + specificity - 1)
-      }
-      
-      youden_values <- sapply(possible_integers, calculate_youden)
-      valid_cutoffs <- !is.na(youden_values)
-      
+      valid_cutoffs <- (tp_counts + fn_counts) > 0 & (tn_counts + fp_counts) > 0
+
       if (!any(valid_cutoffs)) {
         optimal_cutoff <- median(possible_integers)
       } else {
-        best_idx <- which.max(youden_values[valid_cutoffs])
+        sensitivity <- tp_counts / (tp_counts + fn_counts)
+        specificity <- tn_counts / (tn_counts + fp_counts)
+        youden_values <- sensitivity + specificity - 1
+        vm <- youden_values[valid_cutoffs]
+        best_idx <- which(vm >= max(vm) - 1e-9)[1]
         optimal_cutoff <- possible_integers[valid_cutoffs][best_idx]
       }
     }
-    
+
     # Calculate all metrics at the optimal cutoff
     binarised_optimal <- as.numeric(scores_clean >= optimal_cutoff)
     
