@@ -100,6 +100,16 @@ reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALS
 
   speed <- match.arg(speed)
 
+  # Force `data` to evaluate NOW, before the random-state snapshot below.
+  # R evaluates function arguments lazily, so without this, an expression
+  # like reduceTo(sample_n(pool, n), ...) wouldn't actually run sample_n()
+  # until data's first real use much later in the function body -- AFTER
+  # the snapshot already captured the pre-sample_n() random state. Since
+  # that snapshot gets restored on exit, the caller's visible RNG stream
+  # would never reflect sample_n()'s own draw, making it silently return
+  # the identical sample on every call.
+  force(data)
+
   # Preserve the caller's random state (reduceTo() seeds its own sampling internally)
   if (exists(".Random.seed", envir = globalenv())) {
     old_seed <- get(".Random.seed", envir = globalenv())
@@ -792,10 +802,10 @@ reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALS
 
     if (identical(sub("s$", "", low_unit), sub("s$", "", high_unit))) {
       low_count <- sub(" .*$", "", low)
-      return(paste0(low_count, " to ", high))
+      return(paste0("~",low_count, " to ", high))
     }
 
-    paste0(low, " to ", high)
+    paste0("~",low, " to ", high)
   }
 
 
@@ -1127,12 +1137,12 @@ reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALS
       if (verbose) {
         message(paste0("=~ This would generate ",
                        format(num_combinations, big.mark = ",",scientific = FALSE),
-                       " combinations to compare (~",format_duration_range(est_seconds/2, est_seconds*2),
+                       " combinations to compare (",format_duration_range(est_seconds/2, est_seconds*2),
                        " with N = ",format(nrow(data), big.mark = ",",scientific = FALSE) ,
                        "). \n=~ Synergistic RFE will be used to reduce combinations to below ",
                        format(ceiling, big.mark = ",",scientific = FALSE),
                        " (search space: ",n.items," items from ",predicted_final_pool_size,
-                       "; ~",format_duration_range(opt_est_seconds/2, opt_est_seconds*2),
+                       "; ",format_duration_range(opt_est_seconds/2, opt_est_seconds*2),
                        ").",
                        " You can change this threshold with the 'ceiling' argument."))
         if (!is.null(prefilter_message)) message(prefilter_message)
