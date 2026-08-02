@@ -782,6 +782,10 @@ reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALS
   # case; keep both full strings when the units differ (e.g. "45 seconds to
   # 2 minutes")
   format_duration_range <- function(low_seconds, high_seconds) {
+    # format_duration() floors to whole units, so any range under a second
+    # would otherwise print as the meaningless "0 to 0 seconds"
+    if (high_seconds < 1) return("< 1 second")
+
     low <- format_duration(low_seconds)
     high <- format_duration(high_seconds)
 
