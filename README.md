@@ -122,7 +122,7 @@ result <- reduceTo(
 | `optimise` | If `TRUE`, runs Synergistic RFE to narrow the item pool via exhaustive small-k scoring when combinations exceed `ceiling`; if `FALSE`, forces exhaustive search regardless of `ceiling` | `TRUE` |
 | `prefilter.ratio` | Before optimisation runs, drop items whose relevance is more than this many times weaker than the strongest item (set `Inf`/`NULL` to disable) | `5` |
 | `ceiling` | Combination threshold for optimisation | `10,000,000` |
-| `opt.n` | Max rows to subsample during optimisation (speeds up large N) | `5000` |
+| `opt.n` | Max rows to subsample during optimisation (speeds up large N) | `20000` |
 | `speed` | `"fast"` mean-imputes missing data to score combinations via a Gram-matrix shortcut (reported statistics are always recomputed from the true data); `"conservative"` uses pairwise deletion throughout with no imputation | `"fast"` |
 
 ### Output

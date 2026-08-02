@@ -17,7 +17,7 @@ reduceTo(
   cross.validate = 0,
   optimise = TRUE,
   prefilter.ratio = 5,
-  opt.n = 5000,
+  opt.n = 20000,
   ceiling = 1e+07,
   round.budget = 1e+06,
   scale.vars = FALSE,
@@ -63,7 +63,10 @@ weaker than the strongest item, before optimisation runs. Never prunes below
 \code{n.items} columns. Set to \code{Inf} or \code{NULL} to disable (default: 5)}
 
 \item{opt.n}{The maximum number of cases (rows) to subsample during heuristic
-optimisation (default: 5000)}
+optimisation (default: 20000). Raising this improves both average recovered
+r and run-to-run consistency at negligible time cost, since the optimisation
+stage's cost is typically dominated by \code{ceiling}/\code{round.budget}
+rather than row count}
 
 \item{ceiling}{Combination threshold triggering optimisation (default: 10,000,000).
 A tighter ceiling narrows the item pool further before the final exhaustive search,

@@ -38,7 +38,10 @@
 #'   weaker than the strongest item, before optimisation runs. Never prunes below
 #'   \code{n.items} columns. Set to \code{Inf} or \code{NULL} to disable (default: 5)
 #' @param opt.n The maximum number of cases (rows) to subsample during heuristic
-#'   optimisation (default: 5000)
+#'   optimisation (default: 20000). Raising this improves both average recovered
+#'   r and run-to-run consistency at negligible time cost, since the optimisation
+#'   stage's cost is typically dominated by \code{ceiling}/\code{round.budget}
+#'   rather than row count
 #' @param ceiling Combination threshold triggering optimisation (default: 10,000,000).
 #'   A tighter ceiling narrows the item pool further before the final exhaustive search,
 #'   which is faster but leaves less room to recover from an imperfect ranking. In
@@ -94,7 +97,7 @@
 reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALSE, r.sq = FALSE,
                      generate = TRUE, item.set = 1, show.progress = TRUE, cross.validate = 0,
                      optimise = TRUE, prefilter.ratio = 5,
-                     opt.n = 5000, ceiling = 1e7, round.budget = 1e6,
+                     opt.n = 20000, ceiling = 1e7, round.budget = 1e6,
                      scale.vars = FALSE, na.rm = TRUE, method = NULL, speed = c("fast", "conservative"),
                      verbose = TRUE){
 
