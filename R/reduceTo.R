@@ -97,7 +97,7 @@
 reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALSE, r.sq = FALSE,
                      generate = TRUE, item.set = 1, show.progress = TRUE, cross.validate = 0,
                      optimise = TRUE, prefilter.ratio = 5,
-                     opt.n = 20000, ceiling = 1e7, round.budget = 1e6,
+                     opt.n = 20000, ceiling = 1e7, round.budget = 1e7,
                      scale.vars = FALSE, na.rm = TRUE, method = NULL, speed = c("fast", "conservative"),
                      verbose = TRUE){
 
@@ -191,8 +191,12 @@ reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALS
     scores_clean <- scores[valid_idx]
     target_clean <- binary_target[valid_idx]
 
-    n_pos <- sum(target_clean == 1)
-    n_neg <- sum(target_clean == 0)
+    # as.double(): sum() of a logical vector returns integer, and n_pos *
+    # n_neg below silently overflows R's 32-bit integer range (NA, with a
+    # warning) once both counts exceed ~46,000 -- well within reach for
+    # real datasets with tens/hundreds of thousands of rows.
+    n_pos <- as.double(sum(target_clean == 1))
+    n_neg <- as.double(sum(target_clean == 0))
     possible_integers <- floor(range(scores_clean)[1]):ceiling(range(scores_clean)[2])
 
     if (n_pos == 0 || n_neg == 0) {
@@ -244,8 +248,8 @@ reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALS
     valid <- !is.na(scores) & !is.na(binary_target)
     s <- scores[valid]
     t <- binary_target[valid]
-    n_pos <- sum(t == 1)
-    n_neg <- sum(t == 0)
+    n_pos <- as.double(sum(t == 1))
+    n_neg <- as.double(sum(t == 0))
     if (n_pos == 0 || n_neg == 0) return(NA)
 
     uniq <- sort(unique(s))
