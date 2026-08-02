@@ -898,11 +898,16 @@ reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALS
     if (is.null(method)) {
       ranking_metric <- "youden_j"
       if (verbose) message("=~= Ranking combinations by Youden's J (use method = 'binarised_r', 'r', or 'auc' to change)")
-    } else if (method %in% valid_binary_methods) {
-      ranking_metric <- method
     } else {
-      stop(paste0("For binary targets, method must be one of: ",
-                  paste(valid_binary_methods, collapse = ", ")))
+      # Case-insensitive, unambiguous-prefix matching -- e.g. "Y", "y",
+      # "youden", all resolve to "youden_j"; "r" matches only itself since
+      # no other option starts with r
+      matched_idx <- pmatch(tolower(method), valid_binary_methods)
+      if (is.na(matched_idx)) {
+        stop(paste0("For binary targets, method must be one of: ",
+                    paste(valid_binary_methods, collapse = ", ")))
+      }
+      ranking_metric <- valid_binary_methods[matched_idx]
     }
 
     optimize_for <- ranking_metric
