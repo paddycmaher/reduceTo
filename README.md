@@ -216,8 +216,8 @@ Measured on a massive dataset (300 items, N = 300,000), scoring all C(300, 3) = 
 
 | Engine | Combinations/sec | Time for 4.45M combinations |
 |-------------------------------------|------------------|------------------|
-| `speed = "conservative"` (Row-scan algorithm) | \~9,190/s | \~8.1 min |
 | `speed = "fast"` (Gram matrix) | 100M+/s | \~0.28s (incl. one-time Gram precompute) |
+| `speed = "conservative"` (Row-scan algorithm) | \~9,190/s | \~8.1 min |
 
 **\~1,800x faster** than a standard row-scan engine for this case. This is close to the ceiling case for the Gram matrix approach (small `n.items`, large N, since row-scan cost scales with N per combination while the Gram engine's is O(n.items\^2) regardless of N); real end-to-end runs below see smaller, but still large, gains once pool narrowing and R-side overhead are included.
 
@@ -227,10 +227,10 @@ As a comparison, the "Base R Only" column below estimates the best-case scenario
 
 | Selecting | Combinations   | Base R Only  | reduceTo() (default settings) |
 |-----------|----------------|--------------|-------------------------------|
-| 3 of 60   | 34,220         | \~2.4 sec    | 0.03s                         |
-| 5 of 60   | 5,461,512      | \~8.2 min    | 0.06s                         |
-| 8 of 60   | 2,558,620,845  | \~3.7 days   | 0.97s (with optimisation)     |
-| 10 of 60  | 75,394,027,566 | \~4.2 months | 1.22s (with optimisation)     |
+| 3 of 60   | 34,220         | **~2.4 sec**    | **0.03s**                         |
+| 5 of 60   | 5,461,512      | **~8.2 min**    | **0.06s**                         |
+| 8 of 60   | 2,558,620,845  | **~3.7 days**   | **0.97s** (with optimisation)     |
+| 10 of 60  | 75,394,027,566 | **~4.2 months** | **1.22s** (with optimisation)     |
 
 Collectively, the C++ backend, Gram-matrix scoring, and Synergistic RFE let reduceTo turn a months-long base-R search into just over a second.
 
@@ -240,8 +240,8 @@ Your mileage will vary with your hardware and use case, but `reduceTo()` compute
 
 ### Best Practices
 
-- Review top 5-10 solutions, not just #1 - similar performance allows choosing more theoretically valid items
 - Garbage in, garbage out. Please, please ensure your parent scale is valid before shortening it
+- Review the best 5-10 solutions and check whether items you think are 'bad' are being included
 - Use cross-validation for smaller samples (N \< 500) where overfitting may be a concern
 
 ### Optimisation Reliability
@@ -261,7 +261,7 @@ The default optimisation settings were empirically calibrated in both real and d
 
 ```         
 Maher, P. (2026). reduceTo: High-Performance Combinatorial Scale Optimisation.
-R package version 1.2.0. https://github.com/paddycmaher/reduceTo
+R package version 1.3.0. https://github.com/paddycmaher/reduceTo
 ```
 
 ------------------------------------------------------------------------
@@ -274,4 +274,4 @@ Max Planck Institute for Human Development, MPRG Biosocial\
 
 ------------------------------------------------------------------------
 
-**License:** MIT \| **Version:** 1.2.0 \| **Updated:** July 2026
+**License:** MIT \| **Version:** 1.3.0 \| **Updated:** August 2026
