@@ -403,7 +403,7 @@ reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALS
       compressed_data <- compress_for_cpp(data)
     }
 
-    RANK_KEEP_TOP <- 10000   # top combos used to rank items each round
+    RANK_KEEP_TOP <- 10000   # top combos used to rank items each round (row-scan engine only)
 
     # \r only returns to the start of the CURRENT visual line, not the whole
     # logical line -- if the printed text is wider than the console, it wraps
@@ -444,7 +444,7 @@ reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALS
           n_items = k,
           num_choose_from = n_pool,
           original_indices = pool,
-          keep_top = RANK_KEEP_TOP,
+          keep_top = 1,   # items are ranked from item_best, not from a top-K list
           show_progress = FALSE
         )
       } else {
@@ -460,18 +460,25 @@ reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALS
         )
       }
 
-      # Rank items by the best |r| among returned combinations containing
-      # them, not raw frequency (a common-but-mediocre item shouldn't
-      # outrank a rare-but-excellent one)
-      combo_indices_list <- lapply(strsplit(cpp_result$combination, ','), as.integer)
-      flat_items <- unlist(combo_indices_list)
-      flat_r <- rep(abs(cpp_result$r), lengths(combo_indices_list))
-      valid <- !is.na(flat_r)
-      item_best_flat <- tapply(flat_r[valid], flat_items[valid], max)
+      # Rank items by the best |r| among combinations containing them, not
+      # raw frequency (a common-but-mediocre item shouldn't outrank a
+      # rare-but-excellent one). The Gram engine tracks this exactly over
+      # EVERY combination scored; the row-scan engine only returns a top-K
+      # list, so its best is reconstructed from those (items outside it rank last)
+      if (used_gram) {
+        item_best <- cpp_result$item_best
+      } else {
+        combo_indices_list <- lapply(strsplit(cpp_result$combination, ','), as.integer)
+        flat_items <- unlist(combo_indices_list)
+        flat_r <- rep(abs(cpp_result$r), lengths(combo_indices_list))
+        valid <- !is.na(flat_r)
+        item_best_flat <- tapply(flat_r[valid], flat_items[valid], max)
 
-      item_best <- setNames(rep(-Inf, n_pool), as.character(pool))
-      item_best[names(item_best_flat)] <- item_best_flat
-      ranked <- pool[order(item_best[as.character(pool)], decreasing = TRUE)]
+        item_best <- setNames(rep(-Inf, n_pool), as.character(pool))
+        item_best[names(item_best_flat)] <- item_best_flat
+        item_best <- item_best[as.character(pool)]
+      }
+      ranked <- pool[order(item_best, decreasing = TRUE)]
 
       # Look-ahead narrowing: shrink the pool now so that NEXT round's score
       # (at next_k) stays within budget -- narrowing based on this round's
