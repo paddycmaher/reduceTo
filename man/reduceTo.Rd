@@ -99,7 +99,10 @@ ROC curve (binary targets only; ignored otherwise)}
 shortcut, mean-imputing missing values for search only -- reported statistics are
 always recomputed from the true data. \code{"conservative"} scores every
 combination directly with pairwise deletion: no imputation, but slower (so its
-\code{ceiling} and \code{rfe.budget} defaults are 10x tighter)}
+\code{ceiling} and \code{rfe.budget} defaults are 10x tighter). Recommended when
+\code{na.rm = FALSE} and the data have substantial or patterned missingness (e.g.
+whole sections skipped), where each combination is scored on its own complete cases
+and mean-imputed search can miss the best set}
 
 \item{verbose}{If TRUE, prints informational messages (default: TRUE). Progress
 bars and optimisation-stage updates are controlled separately by \code{show.progress}}

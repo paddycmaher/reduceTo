@@ -124,7 +124,7 @@ result <- reduceTo(
 | `ceiling` | Combination threshold for the final search | `100,000,000` (`10,000,000` with `speed = "conservative"`) |
 | `rfe.budget` | Combination threshold per intermediate Synergistic RFE round (as opposed to `ceiling`, which bounds only the final search) | `100,000,000` (`10,000,000` with `speed = "conservative"`) |
 | `opt.n` | Max rows to subsample during optimisation (speeds up large N) | `20000` |
-| `speed` | `"fast"` mean-imputes missing data to score combinations via a Gram-matrix shortcut (reported statistics are always recomputed from the true data); `"conservative"` uses pairwise deletion throughout with no imputation | `"fast"` |
+| `speed` | `"fast"` mean-imputes missing data to score combinations via a Gram-matrix shortcut (reported statistics are always recomputed from the true data); `"conservative"` uses pairwise deletion throughout with no imputation (recommended with `na.rm = FALSE` and substantial or patterned missingness) | `"fast"` |
 
 ### Output
 
