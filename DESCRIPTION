@@ -9,7 +9,10 @@ Roxygen: list(markdown = TRUE)
 RoxygenNote: 8.0.0
 Imports:
     Rcpp,
-    RcppParallel
+    RcppParallel,
+    stats,
+    utils
+SystemRequirements: GNU make
 LinkingTo:
     Rcpp,
     RcppParallel

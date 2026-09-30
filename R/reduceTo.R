@@ -87,6 +87,8 @@
 #' @export
 #' @useDynLib reduceTo, .registration = TRUE
 #' @importFrom Rcpp sourceCpp
+#' @importFrom stats cor median sd setNames
+#' @importFrom utils flush.console head
 #' @import RcppParallel
 #'
 #' @examples
@@ -1577,6 +1579,8 @@ reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALS
 }
 
 #' Print Method for reduced_scale Objects
+#' @param x A \code{reduced_scale} object returned by \code{reduceTo()}
+#' @param ... Unused
 #' @export
 print.reduced_scale <- function(x, ...) {
   is_binary <- !is.null(x$binary_info)

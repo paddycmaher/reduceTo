@@ -6,6 +6,11 @@
 \usage{
 \method{print}{reduced_scale}(x, ...)
 }
+\arguments{
+\item{x}{A \code{reduced_scale} object returned by \code{reduceTo()}}
+
+\item{...}{Unused}
+}
 \description{
 Print Method for reduced_scale Objects
 }
