@@ -3,8 +3,8 @@
 #' Systematically evaluates all possible subsets of items from a larger scale to 
 #' find the combination that maximises either internal consistency or correlation 
 #' with an external criterion. Runs on a parallelised C++ backend with 
-#' memory-optimised data structures (8-bit compression) to evaluate millions of 
-#' combinations in seconds.
+#' memory-optimised data structures (8-bit compression) to evaluate hundreds of 
+#' millions of combinations in seconds.
 #'
 #' @details
 #' \strong{Key Features:}
@@ -42,14 +42,16 @@
 #'   r and run-to-run consistency at negligible time cost, since the optimisation
 #'   stage's cost is typically dominated by \code{ceiling}/\code{rfe.budget}
 #'   rather than row count
-#' @param ceiling Combination threshold triggering optimisation (default: 10,000,000).
+#' @param ceiling Combination threshold triggering optimisation (default: 100,000,000;
+#'   10,000,000 with \code{speed = "conservative"}).
 #'   A tighter ceiling narrows the item pool further before the final exhaustive search,
 #'   which is faster but leaves less room to recover from an imperfect ranking. In
 #'   testing, Synergistic RFE reliably found the true optimum except in
 #'   extreme scenarios -- e.g. items whose value is invisible until combined with several
 #'   (3+) specific others; a more generous ceiling protects against this rare case
 #' @param rfe.budget Combination threshold per intermediate Synergistic RFE round
-#'   (default: 10,000,000), as opposed to \code{ceiling}, which bounds only the
+#'   (default: 100,000,000; 10,000,000 with \code{speed = "conservative"}), as opposed
+#'   to \code{ceiling}, which bounds only the
 #'   final search. Raising it lets each narrowing round exhaustively score a larger
 #'   slice of the pool before dropping items, which can recover items that a
 #'   tighter round would have pruned too early -- at a real, roughly linear time
@@ -65,7 +67,8 @@
 #' @param speed \code{"fast"} (default) scores combinations using a Gram-matrix
 #'   shortcut, mean-imputing missing values for search only -- reported statistics are
 #'   always recomputed from the true data. \code{"conservative"} scores every
-#'   combination directly with pairwise deletion: no imputation, but slower
+#'   combination directly with pairwise deletion: no imputation, but slower (so its
+#'   \code{ceiling} and \code{rfe.budget} defaults are 10x tighter)
 #' @param verbose If TRUE, prints informational messages (default: TRUE). Progress
 #'   bars and optimisation-stage updates are controlled separately by \code{show.progress}
 #'
@@ -106,11 +109,18 @@
 reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALSE, r.sq = FALSE,
                      generate = TRUE, item.set = 1, show.progress = TRUE, cross.validate = 0,
                      optimise = TRUE, prefilter.ratio = 5,
-                     opt.n = 20000, ceiling = 1e7, rfe.budget = 1e7,
+                     opt.n = 20000, ceiling = 1e8, rfe.budget = 1e8,
                      scale.vars = FALSE, na.rm = TRUE, method = NULL, speed = c("fast", "conservative"),
                      verbose = TRUE){
 
   speed <- match.arg(speed)
+
+  # The row-scan engine re-reads every row for every combination, so it
+  # keeps the previous 10x tighter budgets unless they're set explicitly
+  if (speed == "conservative") {
+    if (missing(ceiling)) ceiling <- 1e7
+    if (missing(rfe.budget)) rfe.budget <- 1e7
+  }
 
   # Whole-number arguments: n.items = 0 used to return an empty result
   # silently, and non-integers were quietly rounded deep inside choose()

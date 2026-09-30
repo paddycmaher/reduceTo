@@ -18,8 +18,8 @@ reduceTo(
   optimise = TRUE,
   prefilter.ratio = 5,
   opt.n = 20000,
-  ceiling = 1e+07,
-  rfe.budget = 1e+07,
+  ceiling = 1e+08,
+  rfe.budget = 1e+08,
   scale.vars = FALSE,
   na.rm = TRUE,
   method = NULL,
@@ -68,7 +68,8 @@ r and run-to-run consistency at negligible time cost, since the optimisation
 stage's cost is typically dominated by \code{ceiling}/\code{rfe.budget}
 rather than row count}
 
-\item{ceiling}{Combination threshold triggering optimisation (default: 10,000,000).
+\item{ceiling}{Combination threshold triggering optimisation (default: 100,000,000;
+10,000,000 with \code{speed = "conservative"}).
 A tighter ceiling narrows the item pool further before the final exhaustive search,
 which is faster but leaves less room to recover from an imperfect ranking. In
 testing, Synergistic RFE reliably found the true optimum except in
@@ -76,7 +77,8 @@ extreme scenarios -- e.g. items whose value is invisible until combined with sev
 (3+) specific others; a more generous ceiling protects against this rare case}
 
 \item{rfe.budget}{Combination threshold per intermediate Synergistic RFE round
-(default: 10,000,000), as opposed to \code{ceiling}, which bounds only the
+(default: 100,000,000; 10,000,000 with \code{speed = "conservative"}), as opposed
+to \code{ceiling}, which bounds only the
 final search. Raising it lets each narrowing round exhaustively score a larger
 slice of the pool before dropping items, which can recover items that a
 tighter round would have pruned too early -- at a real, roughly linear time
@@ -96,7 +98,8 @@ ROC curve (binary targets only; ignored otherwise)}
 \item{speed}{\code{"fast"} (default) scores combinations using a Gram-matrix
 shortcut, mean-imputing missing values for search only -- reported statistics are
 always recomputed from the true data. \code{"conservative"} scores every
-combination directly with pairwise deletion: no imputation, but slower}
+combination directly with pairwise deletion: no imputation, but slower (so its
+\code{ceiling} and \code{rfe.budget} defaults are 10x tighter)}
 
 \item{verbose}{If TRUE, prints informational messages (default: TRUE). Progress
 bars and optimisation-stage updates are controlled separately by \code{show.progress}}
@@ -117,8 +120,8 @@ A list of class \code{reduced_scale} containing:
 Systematically evaluates all possible subsets of items from a larger scale to
 find the combination that maximises either internal consistency or correlation
 with an external criterion. Runs on a parallelised C++ backend with
-memory-optimised data structures (8-bit compression) to evaluate millions of
-combinations in seconds.
+memory-optimised data structures (8-bit compression) to evaluate hundreds of
+millions of combinations in seconds.
 }
 \details{
 \strong{Key Features:}

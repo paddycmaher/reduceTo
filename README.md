@@ -79,7 +79,7 @@ result <- reduceTo(data, n.items = 6, target = diagnosis)
 When exhaustive search becomes intractable, reduceTo narrows the search area first, before moving to **exhaustive search**, using **Synergy-Ranked Recursive Feature Elimination** (Synergistic RFE): exhaustively scores every combination at a small k, keeps the best-performing items, then grows k and repeats against the shrinking pool. This is computationally cheap because it relies on the same Gram-matrix approach, and no combinations are discarded without being scored.
 
 ``` r
-# Choose 10 from 200 items (2.5 trillion combinations)
+# Choose 10 from 200 items (22 quadrillion combinations)
 result <- reduceTo(data = large_item_bank, n.items = 10)
 ```
 
@@ -121,8 +121,8 @@ result <- reduceTo(
 |----------------|-----------------------------------------|----------------|
 | `optimise` | If `TRUE`, runs Synergistic RFE to narrow the item pool via exhaustive small-k scoring when combinations exceed `ceiling`; if `FALSE`, forces exhaustive search regardless of `ceiling` | `TRUE` |
 | `prefilter.ratio` | Before optimisation runs, drop items whose relevance is more than this many times weaker than the strongest item (set `Inf`/`NULL` to disable) | `5` |
-| `ceiling` | Combination threshold for the final search | `10,000,000` |
-| `rfe.budget` | Combination threshold per intermediate Synergistic RFE round (as opposed to `ceiling`, which bounds only the final search) | `10,000,000` |
+| `ceiling` | Combination threshold for the final search | `100,000,000` (`10,000,000` with `speed = "conservative"`) |
+| `rfe.budget` | Combination threshold per intermediate Synergistic RFE round (as opposed to `ceiling`, which bounds only the final search) | `100,000,000` (`10,000,000` with `speed = "conservative"`) |
 | `opt.n` | Max rows to subsample during optimisation (speeds up large N) | `20000` |
 | `speed` | `"fast"` mean-imputes missing data to score combinations via a Gram-matrix shortcut (reported statistics are always recomputed from the true data); `"conservative"` uses pairwise deletion throughout with no imputation | `"fast"` |
 
@@ -196,16 +196,16 @@ predictions <- ifelse(scores >= 7, "Likely", "Unlikely")
 ### Large Item Bank
 
 ``` r
-# Select 10 from 150 items (5.9 × 10^15 combinations!)
+# Select 10 from 150 items (1.2 × 10^15 combinations!)
 result <- reduceTo(
   data = item_bank_150,
   n.items = 10,
   target = ability
 )
 
-# Synergistic RFE identifies the strongest ~45 items
-# Exhaustive search on C(45, 10) = 3.2M combinations
-# Total time: ~30 seconds
+# Synergistic RFE identifies the strongest ~33 items
+# Exhaustive search on C(33, 10) = 92.6M combinations
+# Total time: under a second
 ```
 
 ## Performance Benchmarks
@@ -216,10 +216,10 @@ Measured on a massive dataset (300 items, N = 300,000), scoring all C(300, 3) = 
 
 | Engine | Combinations/sec | Time for 4.45M combinations |
 |-------------------------------------|------------------|------------------|
-| `speed = "fast"` (Gram matrix) | 100M+/s | \~0.28s (incl. one-time Gram precompute) |
+| `speed = "fast"` (Gram matrix) | 1B+/s | \~0.28s (incl. one-time Gram precompute) |
 | `speed = "conservative"` (Row-scan algorithm) | \~9,190/s | \~8.1 min |
 
-**\~1,800x faster** than a standard row-scan engine for this case. This is close to the ceiling case for the Gram matrix approach (small `n.items`, large N, since row-scan cost scales with N per combination while the Gram engine's is O(n.items\^2) regardless of N); real end-to-end runs below see smaller, but still large, gains once pool narrowing and R-side overhead are included.
+**\~1,800x faster** than a standard row-scan engine for this case. This is close to the ceiling case for the Gram matrix approach (small `n.items`, large N, since row-scan cost scales with N per combination while the Gram engine's is roughly constant per combination, regardless of N or `n.items`); real end-to-end runs below see smaller, but still large, gains once pool narrowing and R-side overhead are included.
 
 ### reduceTo() vs. Plain R
 
@@ -227,12 +227,12 @@ As a comparison, the "Base R Only" column below estimates the best-case scenario
 
 | Selecting | Combinations   | Base R Only  | reduceTo() (default settings) |
 |-----------|----------------|--------------|-------------------------------|
-| 3 of 60   | 34,220         | **~2.4 sec**    | **0.03s**                         |
+| 3 of 60   | 34,220         | **~2.4 sec**    | **0.06s**                         |
 | 5 of 60   | 5,461,512      | **~8.2 min**    | **0.06s**                         |
-| 8 of 60   | 2,558,620,845  | **~3.7 days**   | **0.97s** (with optimisation)     |
-| 10 of 60  | 75,394,027,566 | **~4.2 months** | **1.22s** (with optimisation)     |
+| 8 of 60   | 2,558,620,845  | **~3.7 days**   | **0.23s** (with optimisation)     |
+| 10 of 60  | 75,394,027,566 | **~4.2 months** | **0.38s** (with optimisation)     |
 
-Collectively, the C++ backend, Gram-matrix scoring, and Synergistic RFE let reduceTo turn a months-long base-R search into just over a second.
+Collectively, the C++ backend, Gram-matrix scoring, and Synergistic RFE let reduceTo turn a months-long base-R search into well under a second.
 
 Your mileage will vary with your hardware and use case, but `reduceTo()` computes a live ETA.
 
@@ -246,7 +246,7 @@ Your mileage will vary with your hardware and use case, but `reduceTo()` compute
 
 ### Optimisation Reliability
 
-The default optimisation settings were empirically calibrated in both real and deliberately-adversarial simulated datasets (200M+ combinations each). In practice, the heuristic approach only failed to find the true optimal item bundle in extreme scenarios, such as when an item's value is invisible unless combined with several (3+) other specific items. In these cases, the true solution could still be found by raising the `ceiling` value. Ordinary item structures (including simple weak/opposite-signed pairs) recovered the true optimum every time tested, across a wide range of `ceiling` settings.
+The default optimisation settings were empirically calibrated in both real and deliberately-adversarial simulated datasets (200M+ combinations each). In practice, the heuristic approach only failed to find the true optimal item bundle in extreme scenarios, such as when an item's value is invisible unless combined with several (3+) other specific items. In these cases, the true solution could still be found by raising the `ceiling` value. Ordinary item structures (including simple weak/opposite-signed pairs) recovered the true optimum every time tested, across a wide range of `ceiling` settings. With the current defaults, it also recovered the exact optimum in all 12 real-data tests (8 and 10 items from the 60-item IPIP-NEO Neuroticism scale, N = 20,000), verified by exhaustive search of up to 75 billion combinations.
 
 ### Binary Targets
 
