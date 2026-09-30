@@ -28,3 +28,17 @@ test_that("reduceTo() restores the caller's RNG state even when a target is supp
 
   expect_false(identical(x1, x2))
 })
+
+test_that("reduceTo() leaves no RNG seed behind in a fresh session that had none", {
+  d <- data.frame(matrix(rnorm(1000), 100))
+  saved <- get(".Random.seed", envir = globalenv())
+  on.exit(assign(".Random.seed", saved, envir = globalenv()))
+  rm(".Random.seed", envir = globalenv())
+
+  invisible(reduceTo(d, 3, show.progress = FALSE))
+
+  # Before the fix, the seed left by reduceTo()'s internal set.seed(1) calls
+  # stayed in place, so every fresh session's random draws after a call
+  # were identical (the set.seed(1) stream)
+  expect_false(exists(".Random.seed", envir = globalenv()))
+})

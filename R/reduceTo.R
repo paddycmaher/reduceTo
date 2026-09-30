@@ -55,7 +55,8 @@
 #'   tighter round would have pruned too early -- at a real, roughly linear time
 #'   cost per round. Empirically, gains taper off well before \code{ceiling}-scale
 #'   values; raising it far beyond the default is rarely worth the extra time
-#' @param scale.vars If TRUE, mean-centers and scales all columns (default: FALSE)
+#' @param scale.vars If TRUE, mean-centers and scales all columns, using the training
+#'   rows' means/SDs when cross-validating (default: FALSE)
 #' @param na.rm If TRUE, handles missing values via pairwise deletion (default: TRUE)
 #' @param method Metric for ranking combinations (default: NULL for auto-selection):
 #'   "r" for Pearson correlation, "youden_j" for Youden's Index, "binarised_r"
@@ -71,7 +72,7 @@
 #' @return A list of class \code{reduced_scale} containing:
 #' \describe{
 #'   \item{output}{Data frame of the top n.sets combinations and their performance metrics}
-#'   \item{leaderboard}{Extended data frame of the top combinations (100, or 1000 when ranking by Youden's J)}
+#'   \item{leaderboard}{Extended data frame of the top combinations (100, or 1000 when ranking by Youden's J, AUC or binarised r)}
 #'   \item{best_names}{Character vector of item names in the top-ranked set}
 #'   \item{best_indices}{Integer vector of column indices in the top-ranked set}
 #'   \item{scores}{(If generate = TRUE) A data frame containing the sum scores}
@@ -111,6 +112,13 @@ reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALS
 
   speed <- match.arg(speed)
 
+  # Whole-number arguments: n.items = 0 used to return an empty result
+  # silently, and non-integers were quietly rounded deep inside choose()
+  is_whole <- function(x) is.numeric(x) && length(x) == 1 && !is.na(x) && x >= 1 && x == round(x)
+  if (!is_whole(n.items)) stop("'n.items' must be a single whole number >= 1.")
+  if (!is_whole(n.sets)) stop("'n.sets' must be a single whole number >= 1.")
+  if (!is_whole(item.set)) stop("'item.set' must be a single whole number >= 1.")
+
   # Force `data` to evaluate NOW, before the random-state snapshot below.
   # R evaluates function arguments lazily, so without this, an expression
   # like reduceTo(sample_n(pool, n), ...) wouldn't actually run sample_n()
@@ -125,6 +133,12 @@ reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALS
   if (exists(".Random.seed", envir = globalenv())) {
     old_seed <- get(".Random.seed", envir = globalenv())
     on.exit(assign(".Random.seed", old_seed, envir = globalenv()), add = TRUE)
+  } else {
+    # Fresh session with no seed yet: remove the one our own set.seed(1)
+    # calls leave behind, or every random draw the caller makes afterwards
+    # would silently continue from set.seed(1)'s stream (identical results
+    # across fresh sessions -- e.g. a simulation run after a reduceTo() call)
+    on.exit(if (exists(".Random.seed", envir = globalenv())) rm(".Random.seed", envir = globalenv()), add = TRUE)
   }
 
   # ============================================================================
@@ -137,7 +151,7 @@ reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALS
   }
   
   # Reverse-score items negatively correlated with the target
-  flip_items <- function(x, the_items) {
+  flip_items <- function(x, the_items, ref_rows = seq_len(nrow(x))) {
 
     should_flip <- if(is.logical(the_items)) any(the_items, na.rm = TRUE) else length(the_items) > 0
 
@@ -145,19 +159,31 @@ reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALS
       if (scale.vars) {
         x[, the_items] <- x[, the_items] * -1
       } else {
-        # max - x, per column, using training-set maxes so holdout data flips consistently
-        col_maxes <- apply(data[, the_items, drop = FALSE], 2, max, na.rm = TRUE)
+        # (min + max) - x, per column -- conventional reverse-keying, so a 1-5
+        # item stays on 1-5 (plain max - x shifted it to 0-4, leaving returned
+        # sum scores and binary cutoffs offset by one point per reversed item
+        # from how users score the scale themselves). Uses training-set
+        # bounds (ref_rows) so holdout data flips consistently
+        ref <- x[ref_rows, the_items, drop = FALSE]
+        col_bounds <- apply(ref, 2, min, na.rm = TRUE) + apply(ref, 2, max, na.rm = TRUE)
         cols_to_mod <- x[, the_items, drop = FALSE]
-        x[, the_items] <- -1 * sweep(cols_to_mod, 2, col_maxes, "-")
+        x[, the_items] <- -1 * sweep(cols_to_mod, 2, col_bounds, "-")
       }
     }
     return(x)
   }
-  
-  # Reproducible row subsample (capped at 2000) used for correlation-based item flipping
-  get_cor_subsample <- function(n_rows) {
-    set.seed(1)
-    if (n_rows > 2000) sample(1:n_rows, 2000) else 1:n_rows
+
+  # Pearson correlation matrix of the columns of x, from mean-imputed data
+  # via one BLAS crossprod() -- fast enough to use ALL rows (cor(use = "p")
+  # handles missingness per pair, which makes a full p x p matrix slow at
+  # large N, hence the old 2000-row subsample -- small enough to orient weak
+  # items the wrong way)
+  imputed_cor <- function(x) {
+    xc <- sweep(x, 2, colMeans(x, na.rm = TRUE))
+    xc[is.na(xc)] <- 0
+    cv <- crossprod(xc)
+    sds <- sqrt(diag(cv))
+    cv / outer(sds, sds)
   }
 
   # Cutoff search + AUC for binary targets, sharing ONE grouping pass.
@@ -477,38 +503,41 @@ reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALS
     return(pool)
   }
 
+  # One shift/scale shared by ALL columns, not one per column: rescaling
+  # each column to its own 0-254 range re-weighted items by 1/range, so the
+  # search optimised a different composite than the raw sum score it reports
+  # (wrong best set in 35/40 tests on mixed-range continuous items). A common
+  # affine map leaves every sum-score correlation -- including na.rm = TRUE
+  # pro-rating -- unchanged
   compress_for_cpp <- function(data) {
-    compressed <- matrix(0L, nrow = nrow(data), ncol = ncol(data))
-    
-    for (i in 1:ncol(data)) {
-      x <- data[, i]
-      
-      # Handle NAs
-      na_mask <- is.na(x)
-      
-      # Find range
-      min_val <- min(x, na.rm = TRUE)
-      max_val <- max(x, na.rm = TRUE)
-      range_val <- max_val - min_val
-      
-      # Determine if the column is entirely integers (allow for floating-point noise)
-      is_integer_like <- all(abs(x[!na_mask] - round(x[!na_mask])) < 1e-8)
-      
-      if (range_val == 0) {
-        # Constant column
-        compressed[, i] <- 0L
-      } else if (range_val <= 254 && is_integer_like) {
-        # Already fits AND is integers - just shift to 0
-        compressed[, i] <- as.integer(x - min_val)
-      } else {
-        # Continuous decimals OR range > 254 - Scale proportionally to 0-254 buckets
-        compressed[, i] <- as.integer((x - min_val) * 254 / range_val)
-      }
-      
-      # Mark NAs as 255
-      compressed[na_mask, i] <- 255L
+    x <- as.matrix(data)
+
+    # Handle NAs
+    na_mask <- is.na(x)
+
+    # Find range
+    min_val <- min(x, na.rm = TRUE)
+    max_val <- max(x, na.rm = TRUE)
+    range_val <- max_val - min_val
+
+    # Determine if the data is entirely integers (allow for floating-point noise)
+    is_integer_like <- all(abs(x[!na_mask] - round(x[!na_mask])) < 1e-8)
+
+    if (range_val == 0) {
+      # Constant data
+      compressed <- x * 0
+    } else if (range_val <= 254 && is_integer_like) {
+      # Already fits AND is integers - just shift to 0
+      compressed <- round(x - min_val)
+    } else {
+      # Continuous decimals OR range > 254 - Scale proportionally to 0-254 buckets
+      compressed <- round((x - min_val) * 254 / range_val)
     }
-    
+    storage.mode(compressed) <- "integer"
+
+    # Mark NAs as 255
+    compressed[na_mask] <- 255L
+
     return(compressed)
   }
   
@@ -645,6 +674,14 @@ reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALS
         leaderboard <- leaderboard[order(abs(leaderboard[[ranking_metric]]),
                                          decreasing = TRUE), ]
         mark_time("binary_reranking")
+      } else {
+        # Re-rank by the exact r just recomputed. Both engines search on an
+        # approximation (mean-imputed / 8-bit data), so their order within
+        # the top keep_top can disagree with the r actually reported: under
+        # 15% missingness, row 1 was not the best reported set in half of
+        # the runs tested. Re-ranking recovered the exact optimum in every
+        # stress test run (80/80, up to 50% missing, incl. MNAR patterns)
+        leaderboard <- leaderboard[order(abs(leaderboard$r), decreasing = TRUE), ]
       }
     }
 
@@ -842,16 +879,19 @@ reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALS
   }
   
   target_expr <- substitute(target)
-  
+  target_col_name <- NULL
+
   # Handle non-standard evaluation for target parameter
   if (!is.null(target_expr) && is.symbol(target_expr)) {
     target_name <- as.character(target_expr)
-    
+
     # Check if this symbol refers to a column in data
     if (target_name %in% colnames(data)) {
-      target <- data[[target_name]]
+      target_col_name <- target_name
+      # [, name] rather than [[name]], which errors on matrix input
+      target <- data[, target_name]
       # Replace column with NAs so it's filtered out but indices remain correct
-      data[[target_name]] <- NA
+      data[, target_name] <- NA
     } else {
       # Try to evaluate in parent environment
       target <- tryCatch(
@@ -868,17 +908,35 @@ reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALS
   if (!is.null(target) && length(target) != nrow(data)) {
     stop("Length of 'target' must match number of rows in 'data'")
   }
-  
-  
+
+  # Validate target type and variance up front (factors/characters used to
+  # fail deep inside cor() with "'y' must be numeric", and a constant target
+  # silently returned r = NA)
+  if (!is.null(target)) {
+    if (is.logical(target)) target <- as.numeric(target)
+    if (!is.numeric(target)) {
+      stop("'target' must be numeric (or logical / 0-1 for binary classification).")
+    }
+    if (length(unique(target[!is.na(target)])) < 2) {
+      stop("'target' has no variance (fewer than two distinct non-missing values).")
+    }
+  }
+
+
   # Detect binary target and notify user
   is_binary <- FALSE
-  target_supplied <- !is.null(target) 
-  
-  
+  target_supplied <- !is.null(target)
+
+
   if (!is.null(target)) {
     unique_vals <- unique(target[!is.na(target)])
     is_binary <- length(unique_vals) == 2 && all(unique_vals %in% c(0, 1))
-    
+
+    if (length(unique_vals) == 2 && !is_binary && verbose) {
+      message(sprintf("=~= Note: target has exactly two values (%s) -- recode to 0/1 to optimise for binary classification.",
+                      paste(sort(unique_vals), collapse = ", ")))
+    }
+
     # If scale.vars is TRUE with binary target, treat as continuous
     if (is_binary && scale.vars) {
       is_binary <- FALSE
@@ -922,10 +980,12 @@ reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALS
     }
   }
 
-  # Youden's J and AUC need a wider leaderboard: earlier stages rank by r,
+  # Classification metrics need a wider leaderboard: earlier stages rank by r,
   # which can discard combinations with weak r but strong classification
-  # performance
-  leaderboard_length <- if (ranking_metric %in% c("youden_j", "auc")) 1000 else 100
+  # performance (the top 100 by r missed the best-Youden set in 5/12 tests;
+  # the top 1000 in 0/12). Binarised r is cutoff-based too, so it gets the
+  # same width as Youden's J and AUC
+  leaderboard_length <- if (ranking_metric %in% c("youden_j", "auc", "binarised_r")) 1000 else 100
 
   mark_time("target_resolution")
   
@@ -933,35 +993,27 @@ reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALS
   if (is.null(colnames(data))) {
     colnames(data) <- paste0("Col_", 1:ncol(data))
   }
+  # Name-based lookups (best_names, scoring) need unique names
+  if (anyDuplicated(colnames(data))) {
+    colnames(data) <- make.unique(colnames(data))
+    if (verbose) message("=~ Note: duplicate column names were made unique (e.g. 'x', 'x' -> 'x', 'x.1').")
+  }
   original_names <- colnames(data)  # Save original column names
   all_original_indices <- 1:ncol(data)
-  
-  # Identify valid numeric columns
-  if (is.matrix(data) || is.array(data)) {
-    valid_mask <- apply(data, 2, is_valid_column)
-  } else {
-    valid_mask <- sapply(data, is_valid_column)
+
+  # Logical (TRUE/FALSE) items are valid 0/1 items, not non-numeric ones to drop
+  if (is.matrix(data) && is.logical(data)) {
+    storage.mode(data) <- "double"
+  } else if (is.data.frame(data)) {
+    is_lgl <- vapply(data, is.logical, logical(1))
+    data[is_lgl] <- lapply(data[is_lgl], as.numeric)
   }
-  valid_mask[is.na(valid_mask)] <- FALSE
-  
-  if (sum(valid_mask) < n.items) {
-    stop("Error: Input data contains fewer valid numeric columns than 'n.items'.")
-  }
-  
-  mark_time("column_validation")
-  
-  # Filter to valid columns
-  data <- data[, valid_mask, drop = FALSE]
-  cols <- 1:ncol(data)
-  original_indices <- all_original_indices[valid_mask]
-  filtered_names <- colnames(data)  # Save valid column names
-  
-  mark_time("column_filtering")
-  
-  # Convert to matrix for computational efficiency
-  if (!is.matrix(data)) data <- as.matrix(data)
-  
-  # if cross-validating, create row indices for training and holdout samples
+
+  # if cross-validating, create row indices for training and holdout samples.
+  # Done first, so every data-driven decision below -- valid columns, item
+  # orientation, prefilter relevance, scaling -- uses training rows only and
+  # never sees the holdout
+  train_rows <- seq_len(nrow(data))
   if (cross.validate) {
     if (cross.validate < 0 || cross.validate > 1){
       stop("Error: cross.validate must be TRUE, FALSE, or a numeric value between 0 and 1.")
@@ -971,16 +1023,50 @@ reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALS
     set.seed(1)
     cv_subset <- sample(1:nrow(data), cv_subset_size)
     cv_holdout <- setdiff(1:nrow(data), cv_subset)
+    train_rows <- cv_subset
     }
-  
-  mark_time("cv_split_setup")
-  
-  # flip items negatively correlated with most central item
-  
-  if (!target_supplied) {
-    cor_subsample <- get_cor_subsample(nrow(data))
 
-    dc <- cor(data[cor_subsample,], use = "p")
+  mark_time("cv_split_setup")
+
+  # Identify valid numeric columns (and, when cross-validating, columns that
+  # also vary within the training rows -- a column constant there would
+  # enter every search stage as a zero-variance "free" item)
+  if (is.matrix(data) || is.array(data)) {
+    valid_mask <- apply(data, 2, is_valid_column)
+    if (cross.validate) valid_mask <- valid_mask & apply(data[train_rows, , drop = FALSE], 2, is_valid_column)
+  } else {
+    valid_mask <- sapply(data, is_valid_column)
+    if (cross.validate) valid_mask <- valid_mask & sapply(data[train_rows, , drop = FALSE], is_valid_column)
+  }
+  valid_mask[is.na(valid_mask)] <- FALSE
+
+  excluded <- setdiff(original_names[!valid_mask], target_col_name)
+  if (length(excluded) > 0 && verbose) {
+    message(paste0("=~ Note: excluding ", length(excluded), " column(s) that are non-numeric, constant, all-NA or contain infinite values: ",
+                   paste(head(excluded, 10), collapse = ", "), if (length(excluded) > 10) ", ..." else ""))
+  }
+
+  if (sum(valid_mask) < n.items) {
+    stop("Error: Input data contains fewer valid numeric columns than 'n.items'.")
+  }
+
+  mark_time("column_validation")
+
+  # Filter to valid columns
+  data <- data[, valid_mask, drop = FALSE]
+  cols <- 1:ncol(data)
+  original_indices <- all_original_indices[valid_mask]
+  filtered_names <- colnames(data)  # Save valid column names
+
+  mark_time("column_filtering")
+
+  # Convert to matrix for computational efficiency
+  if (!is.matrix(data)) data <- as.matrix(data)
+
+  # flip items negatively correlated with most central item
+
+  if (!target_supplied) {
+    dc <- imputed_cor(data[train_rows, , drop = FALSE])
     centrality <- colSums(abs(dc), na.rm = TRUE)
     most_central_item <- order(centrality, decreasing = TRUE)[1]
 
@@ -990,41 +1076,69 @@ reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALS
     items_to_flip <- filtered_names[items_to_flip_TF]
 
     # Reverse-score items
-    data <- flip_items(data, items_to_flip)
-
-    #create target
-    target <- rowMeans(data, na.rm = na.rm)
+    data <- flip_items(data, items_to_flip, train_rows)
 
     # Used later to prefilter weak items before optimisation
     relevance <- centrality
   }
 
   if (target_supplied) {
-    cor_subsample <- get_cor_subsample(nrow(data))
-
     # For external criteria: flip items negatively correlated with target
-    dc <- cor(data[cor_subsample,], target[cor_subsample], use = "p")
-    dc[is.na(dc)] <- 0
+    dc <- as.vector(cor(data[train_rows, , drop = FALSE], target[train_rows], use = "p"))
 
-    items_to_flip_TF <- as.vector(dc) < 0
+    # Drop (rather than zero out) items near-perfectly correlated with the
+    # target -- almost certainly the target itself or a copy of it -- or
+    # with no computable correlation. Zeroed columns used to stay in the
+    # pool as free "dummy" slots: a reported k-item set could really be k-1
+    # items plus a constant, reported with the smaller set's r but scored
+    # with the real item by anyone who then used it
+    drop_mask <- is.na(dc) | abs(dc) > 0.999999
+    if (any(drop_mask)) {
+      if (verbose) {
+        message(paste0("=~ Note: excluding ", sum(drop_mask), " item(s) with an undefined or near-perfect (|r| > 0.999999) correlation with the target: ",
+                       paste(head(filtered_names[drop_mask], 10), collapse = ", ")))
+      }
+      if (sum(!drop_mask) < n.items) {
+        stop("Error: Input data contains fewer valid numeric columns than 'n.items'.")
+      }
+      data <- data[, !drop_mask, drop = FALSE]
+      dc <- dc[!drop_mask]
+      cols <- 1:ncol(data)
+      original_indices <- original_indices[!drop_mask]
+      filtered_names <- filtered_names[!drop_mask]
+    }
+
+    items_to_flip_TF <- dc < 0
     items_to_flip <- filtered_names[items_to_flip_TF]
-    items_to_zero <- (abs(as.vector(dc)) > 0.999999 | abs(as.vector(dc)) < 0.0001)
-    data[,items_to_zero] <- 0
 
-    data <- flip_items(data, items_to_flip)
+    data <- flip_items(data, items_to_flip, train_rows)
     pivot_item <- NA
 
     # Used later to prefilter weak items before optimisation
-    relevance <- abs(as.vector(dc))
+    relevance <- abs(dc)
   }
-  
+
+  # Apply standardization if requested -- here, before any search stage (not
+  # just the final one), using training-row means/SDs for every row. Scaling
+  # only the final pool left Synergistic RFE ranking items on the raw scale,
+  # and holdout rows (and their $scores) on a different scale from training
+  if (scale.vars) {
+    scale_ref <- data[train_rows, , drop = FALSE]
+    data <- sweep(data, 2, colMeans(scale_ref, na.rm = TRUE), "-")
+    data <- sweep(data, 2, apply(scale_ref, 2, sd, na.rm = TRUE), "/")
+  }
+
+  #create target
+  if (!target_supplied) target <- rowMeans(data, na.rm = na.rm)
+  target_all <- target  # full-length (training + holdout), returned in $target
+
   if (cross.validate) {
-    data_holdout <- data[cv_holdout,]
+    data_holdout <- data[cv_holdout, , drop = FALSE]
     target_holdout <- target[cv_holdout]
-    data <- data[cv_subset,]
+    data <- data[cv_subset, , drop = FALSE]
     target <- target[cv_subset]
   }
-  
+
   mark_time("item_flipping")
   
   # Check if optimization is needed
@@ -1055,110 +1169,114 @@ reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALS
         }
       }
 
-      # Measure real combinations/sec on this machine to estimate runtime.
-      # A single small timed call is heavily biased toward one-time fixed
-      # costs (RcppParallel thread-pool startup, R<->C++ call overhead) that
-      # never recur once real work is running, making the estimate look far
-      # slower than reality. Instead: run a small first-look calibration
-      # (after an untimed warm-up, so thread-pool startup isn't counted at
-      # all), then use ITS OWN measured rate to size a second calibration
-      # aimed at ~TARGET_CALIB_TIME of real work, which is enough to
-      # amortise the fixed costs away. Both phases size themselves via
-      # choose(), so this stays cheap and safe regardless of engine speed --
-      # never based on a fixed pool-size margin that could blow up for large
-      # n.items under the (much slower) row-scan engine.
-      grow_pool_to_combos <- function(target_combos, start_p, max_p) {
-        p <- start_p
-        while (p < max_p && choose(p, n.items) < target_combos) p <- p + 1
-        p
-      }
-
-      TINY_CALIB_COMBOS <- 2000000
-      TARGET_CALIB_TIME <- 0.1  # seconds
-
-      if (identical(speed, "fast")) {
-        # Gram engine cost doesn't depend on which items, so a small sample suffices
-        col_means <- colMeans(data, na.rm = TRUE)
-        calib_data <- data
-        na_mask <- is.na(calib_data)
-        calib_data[na_mask] <- rep(col_means, each = nrow(calib_data))[na_mask]
-        valid_rows <- !is.na(target)
-        targ_valid <- target[valid_rows]
-
-        run_calib_at <- function(p) {
-          cc <- calib_data[valid_rows, 1:p, drop = FALSE]
-          t0 <- Sys.time()
-          invisible(process_all_combinations_cpp_gram(
-            gram = crossprod(cc),
-            col_sums = colSums(cc),
-            col_target_dots = as.vector(crossprod(cc, targ_valid)),
-            sum_target = sum(targ_valid),
-            sum_target_sq = sum(targ_valid^2),
-            n_valid = length(targ_valid),
-            n_items = n.items,
-            num_choose_from = p,
-            original_indices = 1:p,
-            keep_top = 1,
-            show_progress = FALSE
-          ))
-          list(elapsed = as.numeric(difftime(Sys.time(), t0, units = "secs")), combos = choose(p, n.items))
-        }
-
-      } else {
-        run_calib_at <- function(p) {
-          calib_compressed <- compress_for_cpp(data[, 1:p, drop = FALSE])
-          t0 <- Sys.time()
-          invisible(process_all_combinations_cpp_parallel_float(
-            data = calib_compressed,
-            n_items = n.items,
-            num_choose_from = p,
-            na_rm = na.rm,
-            target = target,
-            original_indices = 1:p,
-            keep_top = 1,
-            show_progress = FALSE
-          ))
-          list(elapsed = as.numeric(difftime(Sys.time(), t0, units = "secs")), combos = choose(p, n.items))
-        }
-      }
-
-      p0 <- grow_pool_to_combos(TINY_CALIB_COMBOS, n.items, ncol(data))
-      run_calib_at(p0)  # untimed warm-up
-      tiny <- run_calib_at(p0)
-      tiny_rate <- tiny$combos / max(tiny$elapsed, 1e-6)
-
-      p1 <- grow_pool_to_combos(tiny_rate * TARGET_CALIB_TIME, p0, ncol(data))
-      if (p1 > p0) {
-        # Repeat the sized probe rather than timing it once: each repeat
-        # scores the identical combination set, so this is just extra timing
-        # samples of the same work, not new work. A stray context switch,
-        # page fault, or GC pause can only ever make a single sample look
-        # SLOWER than true throughput, never faster -- so the max across a
-        # few repeats discards that noise and reflects genuinely achievable
-        # speed, rather than being dragged down by an unlucky sample.
-        N_CALIB_REPEATS <- 1
-        rates <- vapply(seq_len(N_CALIB_REPEATS), function(i) {
-          r <- run_calib_at(p1)
-          r$combos / max(r$elapsed, 1e-6)
-        }, numeric(1))
-        combos_per_sec <- max(rates)
-      } else {
-        combos_per_sec <- tiny_rate
-      }
-
-      est_seconds <- num_combinations / combos_per_sec
-      # Predict the final search's actual combination count by replaying
-      # narrowing's own pool-size decisions (see predict_narrowing_final_pool_size
-      # above) rather than assuming it uses the full `ceiling` budget --
-      # binomial coefficients grow so steeply with n.items that a single
-      # pool-size decrement can land well under ceiling, especially for
-      # larger n.items, so that assumption can be wrong by orders of
-      # magnitude on its own, independent of calibration accuracy.
-      predicted_final_pool_size <- predict_narrowing_final_pool_size(length(cols), n.items, ceiling)
-      predicted_final_combos <- choose(predicted_final_pool_size, n.items)
-      opt_est_seconds <- predicted_final_combos / combos_per_sec
-
+      # Everything down to the message below only feeds the runtime estimate
+      # printed when verbose -- skip it entirely when silent (the timing probes
+      # cost ~20% of a typical run with verbose = FALSE, for nothing)
       if (verbose) {
+
+        # Measure real combinations/sec on this machine to estimate runtime.
+        # A single small timed call is heavily biased toward one-time fixed
+        # costs (RcppParallel thread-pool startup, R<->C++ call overhead) that
+        # never recur once real work is running, making the estimate look far
+        # slower than reality. Instead: run a small first-look calibration
+        # (after an untimed warm-up, so thread-pool startup isn't counted at
+        # all), then use ITS OWN measured rate to size a second calibration
+        # aimed at ~TARGET_CALIB_TIME of real work, which is enough to
+        # amortise the fixed costs away. Both phases size themselves via
+        # choose(), so this stays cheap and safe regardless of engine speed --
+        # never based on a fixed pool-size margin that could blow up for large
+        # n.items under the (much slower) row-scan engine.
+        grow_pool_to_combos <- function(target_combos, start_p, max_p) {
+          p <- start_p
+          while (p < max_p && choose(p, n.items) < target_combos) p <- p + 1
+          p
+        }
+
+        TINY_CALIB_COMBOS <- 2000000
+        TARGET_CALIB_TIME <- 0.1  # seconds
+
+        if (identical(speed, "fast")) {
+          # Gram engine cost doesn't depend on which items, so a small sample suffices
+          col_means <- colMeans(data, na.rm = TRUE)
+          calib_data <- data
+          na_mask <- is.na(calib_data)
+          calib_data[na_mask] <- rep(col_means, each = nrow(calib_data))[na_mask]
+          valid_rows <- !is.na(target)
+          targ_valid <- target[valid_rows]
+
+          run_calib_at <- function(p) {
+            cc <- calib_data[valid_rows, 1:p, drop = FALSE]
+            t0 <- Sys.time()
+            invisible(process_all_combinations_cpp_gram(
+              gram = crossprod(cc),
+              col_sums = colSums(cc),
+              col_target_dots = as.vector(crossprod(cc, targ_valid)),
+              sum_target = sum(targ_valid),
+              sum_target_sq = sum(targ_valid^2),
+              n_valid = length(targ_valid),
+              n_items = n.items,
+              num_choose_from = p,
+              original_indices = 1:p,
+              keep_top = 1,
+              show_progress = FALSE
+            ))
+            list(elapsed = as.numeric(difftime(Sys.time(), t0, units = "secs")), combos = choose(p, n.items))
+          }
+
+        } else {
+          run_calib_at <- function(p) {
+            calib_compressed <- compress_for_cpp(data[, 1:p, drop = FALSE])
+            t0 <- Sys.time()
+            invisible(process_all_combinations_cpp_parallel_float(
+              data = calib_compressed,
+              n_items = n.items,
+              num_choose_from = p,
+              na_rm = na.rm,
+              target = target,
+              original_indices = 1:p,
+              keep_top = 1,
+              show_progress = FALSE
+            ))
+            list(elapsed = as.numeric(difftime(Sys.time(), t0, units = "secs")), combos = choose(p, n.items))
+          }
+        }
+
+        p0 <- grow_pool_to_combos(TINY_CALIB_COMBOS, n.items, ncol(data))
+        run_calib_at(p0)  # untimed warm-up
+        tiny <- run_calib_at(p0)
+        tiny_rate <- tiny$combos / max(tiny$elapsed, 1e-6)
+
+        p1 <- grow_pool_to_combos(tiny_rate * TARGET_CALIB_TIME, p0, ncol(data))
+        if (p1 > p0) {
+          # Repeat the sized probe rather than timing it once: each repeat
+          # scores the identical combination set, so this is just extra timing
+          # samples of the same work, not new work. A stray context switch,
+          # page fault, or GC pause can only ever make a single sample look
+          # SLOWER than true throughput, never faster -- so the max across a
+          # few repeats discards that noise and reflects genuinely achievable
+          # speed, rather than being dragged down by an unlucky sample.
+          N_CALIB_REPEATS <- 1
+          rates <- vapply(seq_len(N_CALIB_REPEATS), function(i) {
+            r <- run_calib_at(p1)
+            r$combos / max(r$elapsed, 1e-6)
+          }, numeric(1))
+          combos_per_sec <- max(rates)
+        } else {
+          combos_per_sec <- tiny_rate
+        }
+
+        est_seconds <- num_combinations / combos_per_sec
+        # Predict the final search's actual combination count by replaying
+        # narrowing's own pool-size decisions (see predict_narrowing_final_pool_size
+        # above) rather than assuming it uses the full `ceiling` budget --
+        # binomial coefficients grow so steeply with n.items that a single
+        # pool-size decrement can land well under ceiling, especially for
+        # larger n.items, so that assumption can be wrong by orders of
+        # magnitude on its own, independent of calibration accuracy.
+        predicted_final_pool_size <- predict_narrowing_final_pool_size(length(cols), n.items, ceiling)
+        predicted_final_combos <- choose(predicted_final_pool_size, n.items)
+        opt_est_seconds <- predicted_final_combos / combos_per_sec
+
         message(paste0("=~ This would generate ",
                        format(num_combinations, big.mark = ",",scientific = FALSE),
                        " combinations to compare (",format_duration_range(est_seconds/2, est_seconds*2),
@@ -1192,10 +1310,9 @@ reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALS
   if (cross.validate) { data_holdout <- data_holdout[, cols, drop = FALSE] }
   
   mark_time("column_subsetting")
-  
-  # Apply standardization if requested
-  if (scale.vars) data <- apply(data, 2, scale)
-  
+
+  # (Standardization, if requested, was already applied before optimisation)
+
   mark_time("scaling")
   
   # Warn if items use very different scales (e.g. mixing 0-1 and 1-7 items)
@@ -1236,7 +1353,11 @@ reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALS
   
   # Clean up leaderboard
   rownames(leaderboard) <- NULL
-  
+
+  if (item.set > nrow(leaderboard)) {
+    stop("'item.set' (", item.set, ") is larger than the number of ranked item sets (", nrow(leaderboard), ").")
+  }
+
   mark_time("combination_scoring")
   
   # Parse leaderboard combinations once, shared by both steps below
@@ -1250,7 +1371,10 @@ reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALS
   # Calculate item-level correlations
   ind_cors <- calculate_item_correlations(data, target, items_to_flip, cols_names, parsed_combos)
   
-  ind_keys <- 2*(as.numeric(strsplit(ind_cors[item.set], ',')[[1]]) > 0)-1
+  # Keys straight from the orientation actually used in scoring, not
+  # re-estimated from (rounded) item correlations on a separate subsample,
+  # which could disagree for weak items and describe a different scale
+  ind_keys <- ifelse(best_items$best_names[[item.set]] %in% items_to_flip, -1, 1)
   
   mark_time("item_correlations")
   
@@ -1282,7 +1406,7 @@ reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALS
       }
     } else {
       if (!cross.validate) {
-        leaderboard$sum_scored_R <- leaderboard$r^2
+        leaderboard$sum_scored_R2 <- leaderboard$r^2
       } else {
         leaderboard$sum_scored_R2_train <- leaderboard$r^2
         leaderboard$binarised_R2_train <- leaderboard$binarised_r^2
@@ -1351,7 +1475,7 @@ reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALS
     r = ifelse(!is.null(leaderboard$r),leaderboard$r[item.set],NA),
     binarised_r = ifelse(!is.null(leaderboard$binarised_r),leaderboard$binarised_r[item.set],NA),
     youden_j = ifelse(!is.null(leaderboard$youden_j),leaderboard$youden_j[item.set],NA),
-    output = leaderboard[1:n.sets, ],
+    output = leaderboard[seq_len(min(n.sets, nrow(leaderboard))), ],
     leaderboard = leaderboard,
     item_cors = ind_cors,
     best_names = best_items$best_names[[item.set]],
@@ -1359,7 +1483,7 @@ reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALS
     best_item_cors = ind_cors[item.set],
     best_item_keys = ind_keys,
     scores = if (!is.null(computed_scores)) as.matrix(computed_scores)[, , drop = F] else NULL,
-    target = target,
+    target = target_all,
     original_items = original_names,
     filtered_items = filtered_names,
     final_pool_items = colnames(data),

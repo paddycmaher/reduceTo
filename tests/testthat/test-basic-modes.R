@@ -120,3 +120,73 @@ test_that("print.reduced_scale runs without error", {
 
   expect_output(print(r))
 })
+
+test_that("reverse-keyed items are scored conventionally ((min + max) - x), so cutoffs match hand scoring", {
+  set.seed(8)
+  n <- 2000
+  f <- rnorm(n)
+  lik <- function(z) pmin(5, pmax(1, round(3 + z)))
+  data <- data.frame(p1 = lik(f + rnorm(n)), p2 = lik(f + rnorm(n)), p3 = lik(f + rnorm(n)),
+                     n1 = lik(-f + rnorm(n)), n2 = lik(-f + rnorm(n)))
+  target_bin <- as.numeric(f + rnorm(n, 0, 0.7) > 0.5)
+
+  r <- reduceTo(data, n.items = 4, target = target_bin, show.progress = FALSE)
+
+  hand <- as.matrix(data[, r$best_names])
+  reversed <- r$best_names %in% c("n1", "n2")
+  hand[, reversed] <- 6 - hand[, reversed]
+  expect_equal(unname(r$scores[, "sum_score"]), unname(rowSums(hand)))
+  expect_equal(unname(r$best_item_keys), ifelse(reversed, -1, 1))
+})
+
+test_that("scale.vars = TRUE puts training and holdout rows on the same scale under cross-validation", {
+  set.seed(2)
+  data <- as.data.frame(matrix(round(runif(600 * 8, 1, 5)), ncol = 8) + rnorm(600))
+  colnames(data) <- paste0("Item_", 1:8)
+  target <- rowMeans(data) + rnorm(600)
+
+  r <- reduceTo(data, n.items = 3, target = target, scale.vars = TRUE, cross.validate = TRUE, show.progress = FALSE)
+
+  set.seed(1)
+  train <- sample(1:600, 450)
+  # Holdout rows used to stay on the raw scale (means ~9) next to z-scored training rows (means 0)
+  expect_lt(abs(mean(r$scores[-train, 1])), 0.5)
+  expect_length(r$target, 600)
+})
+
+test_that("a target given as a column name works for matrix input too", {
+  set.seed(1)
+  m <- matrix(rnorm(300 * 7), ncol = 7, dimnames = list(NULL, c(paste0("Item_", 1:6), "outcome")))
+  m[, "outcome"] <- rowSums(m[, 1:3]) + rnorm(300)
+
+  r <- reduceTo(m, n.items = 3, target = outcome, show.progress = FALSE)
+
+  expect_false("outcome" %in% r$best_names)
+  expect_length(r$best_names, 3)
+})
+
+test_that("logical (TRUE/FALSE) items are kept as 0/1 items rather than silently dropped", {
+  set.seed(1)
+  data <- as.data.frame(matrix(rnorm(300 * 5), ncol = 5))
+  data$flag <- data$V1 + rnorm(300) > 0
+
+  r <- reduceTo(data, n.items = 3, show.progress = FALSE)
+
+  expect_true("flag" %in% r$filtered_items)
+})
+
+test_that("an item uncorrelated with the target is not turned into a free 'dummy' slot", {
+  set.seed(3)
+  n <- 3000
+  f <- rnorm(n)
+  target <- f + rnorm(n, 0, 0.5)
+  z <- rnorm(n)
+  z <- resid(lm(z ~ target))  # exactly uncorrelated with the target
+  data <- data.frame(A1 = f + rnorm(n, 0, .7), A2 = f + rnorm(n, 0, .7), A3 = f + rnorm(n, 0, .7),
+                     N1 = rnorm(n), N2 = rnorm(n), Z = z)
+
+  r <- reduceTo(data, n.items = 4, target = target, show.progress = FALSE)
+
+  # The reported r must be the r a user actually gets from the reported items
+  expect_equal(r$r, cor(rowSums(data[, r$best_names]), target), tolerance = 1e-8)
+})

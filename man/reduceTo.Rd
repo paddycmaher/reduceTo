@@ -83,7 +83,8 @@ tighter round would have pruned too early -- at a real, roughly linear time
 cost per round. Empirically, gains taper off well before \code{ceiling}-scale
 values; raising it far beyond the default is rarely worth the extra time}
 
-\item{scale.vars}{If TRUE, mean-centers and scales all columns (default: FALSE)}
+\item{scale.vars}{If TRUE, mean-centers and scales all columns, using the training
+rows' means/SDs when cross-validating (default: FALSE)}
 
 \item{na.rm}{If TRUE, handles missing values via pairwise deletion (default: TRUE)}
 
@@ -104,7 +105,7 @@ bars and optimisation-stage updates are controlled separately by \code{show.prog
 A list of class \code{reduced_scale} containing:
 \describe{
 \item{output}{Data frame of the top n.sets combinations and their performance metrics}
-\item{leaderboard}{Extended data frame of the top combinations (100, or 1000 when ranking by Youden's J)}
+\item{leaderboard}{Extended data frame of the top combinations (100, or 1000 when ranking by Youden's J, AUC or binarised r)}
 \item{best_names}{Character vector of item names in the top-ranked set}
 \item{best_indices}{Integer vector of column indices in the top-ranked set}
 \item{scores}{(If generate = TRUE) A data frame containing the sum scores}

@@ -253,6 +253,7 @@ The default optimisation settings were empirically calibrated in both real and d
 - **Point-biserial r**: Equivalent to Cohen's d, correlates with AUC
 - **Youden's J**: Maximises sensitivity + specificity - 1
 - **Binarised r**: Applies optimal cutoff first, may find different solutions
+- **Cutoffs**: Reported on the conventional sum-score scale -- reverse-keyed items are scored (min + max) - x, e.g. 6 - x for 1-5 items
 - **AUC**: Threshold-independent; always reported alongside the others (`leaderboard$auc`, `binary_info$results$auc`) and selectable via `method = "auc"`
 
 ------------------------------------------------------------------------
