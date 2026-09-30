@@ -262,7 +262,7 @@ The default optimisation settings were empirically calibrated in both real and d
 
 ```         
 Maher, P. (2026). reduceTo: High-Performance Combinatorial Scale Optimisation.
-R package version 1.3.0. https://github.com/paddycmaher/reduceTo
+R package version 1.4.0. https://github.com/paddycmaher/reduceTo
 ```
 
 ------------------------------------------------------------------------
@@ -275,4 +275,4 @@ Max Planck Institute for Human Development, MPRG Biosocial\
 
 ------------------------------------------------------------------------
 
-**License:** MIT \| **Version:** 1.3.0 \| **Updated:** August 2026
+**License:** MIT \| **Version:** 1.4.0 \| **Updated:** September 2026
