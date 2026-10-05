@@ -9,3 +9,4 @@ src/*.dll
 *.Rproj
 local_test.R
 dev/
+function archives/

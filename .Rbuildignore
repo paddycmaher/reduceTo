@@ -2,3 +2,4 @@
 ^\.Rproj\.user$
 ^dev$
 ^local_test\.R$
+^function archives$
