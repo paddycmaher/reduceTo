@@ -1163,6 +1163,103 @@ reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALS
 
   mark_time("item_flipping")
   
+  # Shared by both runtime estimates printed when verbose: when optimisation is
+  # triggered, and when optimise = FALSE forces a search past ceiling
+  measure_combos_per_sec <- function() {
+
+    # Measure real combinations/sec on this machine to estimate runtime.
+    # A single small timed call is heavily biased toward one-time fixed
+    # costs (RcppParallel thread-pool startup, R<->C++ call overhead) that
+    # never recur once real work is running, making the estimate look far
+    # slower than reality. Instead: run a small first-look calibration
+    # (after an untimed warm-up, so thread-pool startup isn't counted at
+    # all), then use ITS OWN measured rate to size a second calibration
+    # aimed at ~TARGET_CALIB_TIME of real work, which is enough to
+    # amortise the fixed costs away. Both phases size themselves via
+    # choose(), so this stays cheap and safe regardless of engine speed --
+    # never based on a fixed pool-size margin that could blow up for large
+    # n.items under the (much slower) row-scan engine.
+    grow_pool_to_combos <- function(target_combos, start_p, max_p) {
+      p <- start_p
+      while (p < max_p && choose(p, n.items) < target_combos) p <- p + 1
+      p
+    }
+
+    TINY_CALIB_COMBOS <- 2000000
+    TARGET_CALIB_TIME <- 0.1  # seconds
+
+    if (identical(speed, "fast")) {
+      # Gram engine cost doesn't depend on which items, so a small sample suffices
+      col_means <- colMeans(data, na.rm = TRUE)
+      calib_data <- data
+      na_mask <- is.na(calib_data)
+      calib_data[na_mask] <- rep(col_means, each = nrow(calib_data))[na_mask]
+      valid_rows <- !is.na(target)
+      targ_valid <- target[valid_rows]
+
+      run_calib_at <- function(p) {
+        cc <- calib_data[valid_rows, 1:p, drop = FALSE]
+        t0 <- Sys.time()
+        invisible(process_all_combinations_cpp_gram(
+          gram = crossprod(cc),
+          col_sums = colSums(cc),
+          col_target_dots = as.vector(crossprod(cc, targ_valid)),
+          sum_target = sum(targ_valid),
+          sum_target_sq = sum(targ_valid^2),
+          n_valid = length(targ_valid),
+          n_items = n.items,
+          num_choose_from = p,
+          original_indices = 1:p,
+          keep_top = 1,
+          show_progress = FALSE
+        ))
+        list(elapsed = as.numeric(difftime(Sys.time(), t0, units = "secs")), combos = choose(p, n.items))
+      }
+
+    } else {
+      run_calib_at <- function(p) {
+        calib_compressed <- compress_for_cpp(data[, 1:p, drop = FALSE])
+        t0 <- Sys.time()
+        invisible(process_all_combinations_cpp_parallel_float(
+          data = calib_compressed,
+          n_items = n.items,
+          num_choose_from = p,
+          na_rm = na.rm,
+          target = target,
+          original_indices = 1:p,
+          keep_top = 1,
+          show_progress = FALSE
+        ))
+        list(elapsed = as.numeric(difftime(Sys.time(), t0, units = "secs")), combos = choose(p, n.items))
+      }
+    }
+
+    p0 <- grow_pool_to_combos(TINY_CALIB_COMBOS, n.items, ncol(data))
+    run_calib_at(p0)  # untimed warm-up
+    tiny <- run_calib_at(p0)
+    tiny_rate <- tiny$combos / max(tiny$elapsed, 1e-6)
+
+    p1 <- grow_pool_to_combos(tiny_rate * TARGET_CALIB_TIME, p0, ncol(data))
+    if (p1 > p0) {
+      # Repeat the sized probe rather than timing it once: each repeat
+      # scores the identical combination set, so this is just extra timing
+      # samples of the same work, not new work. A stray context switch,
+      # page fault, or GC pause can only ever make a single sample look
+      # SLOWER than true throughput, never faster -- so the max across a
+      # few repeats discards that noise and reflects genuinely achievable
+      # speed, rather than being dragged down by an unlucky sample.
+      N_CALIB_REPEATS <- 1
+      rates <- vapply(seq_len(N_CALIB_REPEATS), function(i) {
+        r <- run_calib_at(p1)
+        r$combos / max(r$elapsed, 1e-6)
+      }, numeric(1))
+      combos_per_sec <- max(rates)
+    } else {
+      combos_per_sec <- tiny_rate
+    }
+    combos_per_sec
+  }
+
   # Check if optimization is needed
   num_combinations <- choose(ncol(data), n.items)
 
@@ -1196,96 +1293,8 @@ reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALS
       # cost ~20% of a typical run with verbose = FALSE, for nothing)
       if (verbose) {
 
-        # Measure real combinations/sec on this machine to estimate runtime.
-        # A single small timed call is heavily biased toward one-time fixed
-        # costs (RcppParallel thread-pool startup, R<->C++ call overhead) that
-        # never recur once real work is running, making the estimate look far
-        # slower than reality. Instead: run a small first-look calibration
-        # (after an untimed warm-up, so thread-pool startup isn't counted at
-        # all), then use ITS OWN measured rate to size a second calibration
-        # aimed at ~TARGET_CALIB_TIME of real work, which is enough to
-        # amortise the fixed costs away. Both phases size themselves via
-        # choose(), so this stays cheap and safe regardless of engine speed --
-        # never based on a fixed pool-size margin that could blow up for large
-        # n.items under the (much slower) row-scan engine.
-        grow_pool_to_combos <- function(target_combos, start_p, max_p) {
-          p <- start_p
-          while (p < max_p && choose(p, n.items) < target_combos) p <- p + 1
-          p
-        }
+        combos_per_sec <- measure_combos_per_sec()
 
-        TINY_CALIB_COMBOS <- 2000000
-        TARGET_CALIB_TIME <- 0.1  # seconds
-
-        if (identical(speed, "fast")) {
-          # Gram engine cost doesn't depend on which items, so a small sample suffices
-          col_means <- colMeans(data, na.rm = TRUE)
-          calib_data <- data
-          na_mask <- is.na(calib_data)
-          calib_data[na_mask] <- rep(col_means, each = nrow(calib_data))[na_mask]
-          valid_rows <- !is.na(target)
-          targ_valid <- target[valid_rows]
-
-          run_calib_at <- function(p) {
-            cc <- calib_data[valid_rows, 1:p, drop = FALSE]
-            t0 <- Sys.time()
-            invisible(process_all_combinations_cpp_gram(
-              gram = crossprod(cc),
-              col_sums = colSums(cc),
-              col_target_dots = as.vector(crossprod(cc, targ_valid)),
-              sum_target = sum(targ_valid),
-              sum_target_sq = sum(targ_valid^2),
-              n_valid = length(targ_valid),
-              n_items = n.items,
-              num_choose_from = p,
-              original_indices = 1:p,
-              keep_top = 1,
-              show_progress = FALSE
-            ))
-            list(elapsed = as.numeric(difftime(Sys.time(), t0, units = "secs")), combos = choose(p, n.items))
-          }
-
-        } else {
-          run_calib_at <- function(p) {
-            calib_compressed <- compress_for_cpp(data[, 1:p, drop = FALSE])
-            t0 <- Sys.time()
-            invisible(process_all_combinations_cpp_parallel_float(
-              data = calib_compressed,
-              n_items = n.items,
-              num_choose_from = p,
-              na_rm = na.rm,
-              target = target,
-              original_indices = 1:p,
-              keep_top = 1,
-              show_progress = FALSE
-            ))
-            list(elapsed = as.numeric(difftime(Sys.time(), t0, units = "secs")), combos = choose(p, n.items))
-          }
-        }
-
-        p0 <- grow_pool_to_combos(TINY_CALIB_COMBOS, n.items, ncol(data))
-        run_calib_at(p0)  # untimed warm-up
-        tiny <- run_calib_at(p0)
-        tiny_rate <- tiny$combos / max(tiny$elapsed, 1e-6)
-
-        p1 <- grow_pool_to_combos(tiny_rate * TARGET_CALIB_TIME, p0, ncol(data))
-        if (p1 > p0) {
-          # Repeat the sized probe rather than timing it once: each repeat
-          # scores the identical combination set, so this is just extra timing
-          # samples of the same work, not new work. A stray context switch,
-          # page fault, or GC pause can only ever make a single sample look
-          # SLOWER than true throughput, never faster -- so the max across a
-          # few repeats discards that noise and reflects genuinely achievable
-          # speed, rather than being dragged down by an unlucky sample.
-          N_CALIB_REPEATS <- 1
-          rates <- vapply(seq_len(N_CALIB_REPEATS), function(i) {
-            r <- run_calib_at(p1)
-            r$combos / max(r$elapsed, 1e-6)
-          }, numeric(1))
-          combos_per_sec <- max(rates)
-        } else {
-          combos_per_sec <- tiny_rate
-        }
 
         est_seconds <- num_combinations / combos_per_sec
         # Predict the final search's actual combination count by replaying
@@ -1316,9 +1325,11 @@ reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALS
 
     } else {
       if (verbose) {
-        message(sprintf("=~ Note: %s combinations exceeds ceiling (%s) but optimise = FALSE -- running exhaustive search anyway. This may be slow.",
+        est_seconds <- num_combinations / measure_combos_per_sec()
+        message(sprintf("=~ Note: %s combinations exceeds ceiling (%s) but optimise = FALSE. Running exhaustive search: expected completion time is %s.",
                         format(num_combinations, big.mark = ",", scientific = FALSE),
-                        format(ceiling, big.mark = ",", scientific = FALSE)))
+                        format(ceiling, big.mark = ",", scientific = FALSE),
+                        format_duration_range(est_seconds/2, est_seconds*2)))
       }
     }
   }

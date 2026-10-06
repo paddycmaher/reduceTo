@@ -27,6 +27,13 @@ using namespace RcppParallel;
 // old code redrew on every batch boundary, easily hundreds of times/sec on
 // fast runs) burns real compute on I/O nobody can actually see.
 #define MIN_UPDATE_INTERVAL_MS 33.0
+// Target wall time per dispatch batch. Every batch boundary stalls all threads
+// (the batch can't finish until its slowest piece does) for ~1.5-2.5ms, so
+// batches are sized from measured throughput rather than a fixed combination
+// count: ~100ms gives a steady ~10fps progress/interrupt check on any run size
+// for ~2% overhead (fixed 2e7-combination batches cost ~15-20% on the Gram
+// engine, while 1/60-of-total batches refreshed only every few seconds on huge runs).
+#define TARGET_BATCH_MS 100.0
 
 // Shared 32-bit -> 8-bit packing logic (values already expected to fit 0-254,
 // with 255 / NA_INTEGER treated as the NA sentinel). Used both by the
@@ -375,12 +382,14 @@ List process_all_combinations_cpp_parallel_float(
     if (!show_progress) {
       parallelFor(0, n_combos, worker);
     } else {
-      int batch_size = std::max(1000, n_combos / 60);  // dispatch granularity -- decoupled from print rate (throttled separately) above
+      int batch_size = std::min(1000, n_combos);  // first batch only -- then sized from measured throughput to take ~TARGET_BATCH_MS
       double last_print_ms = -MIN_UPDATE_INTERVAL_MS;
-      for (int start = 0; start < n_combos; start += batch_size) {
-        int end = std::min(start + batch_size, n_combos);
+      for (int start = 0, end = 0; start < n_combos; start = end) {
+        end = start + batch_size;
         parallelFor(start, end, worker);
         Rcpp::checkUserInterrupt();
+        double ms_done = std::chrono::duration<double, std::milli>(std::chrono::high_resolution_clock::now() - start_time).count();
+        batch_size = (int)std::min(std::max(end / std::max(ms_done, 1.0) * TARGET_BATCH_MS, 1000.0), (double)(n_combos - end));
 
         // Progress Bar Update -- throttled to a real, human-perceptible
         // refresh rate rather than redrawing on every batch boundary
@@ -411,12 +420,14 @@ List process_all_combinations_cpp_parallel_float(
     if (!show_progress) {
       parallelFor(0, n_combos, worker);
     } else {
-      int batch_size = std::max(1000, n_combos / 60);  // dispatch granularity -- decoupled from print rate (throttled separately) above
+      int batch_size = std::min(1000, n_combos);  // first batch only -- then sized from measured throughput to take ~TARGET_BATCH_MS
       double last_print_ms = -MIN_UPDATE_INTERVAL_MS;
-      for (int start = 0; start < n_combos; start += batch_size) {
-        int end = std::min(start + batch_size, n_combos);
+      for (int start = 0, end = 0; start < n_combos; start = end) {
+        end = start + batch_size;
         parallelFor(start, end, worker);
         Rcpp::checkUserInterrupt();
+        double ms_done = std::chrono::duration<double, std::milli>(std::chrono::high_resolution_clock::now() - start_time).count();
+        batch_size = (int)std::min(std::max(end / std::max(ms_done, 1.0) * TARGET_BATCH_MS, 1000.0), (double)(n_combos - end));
 
         // Progress Bar Update (Code duplication unavoidable without complex wrapper)
         auto now = std::chrono::high_resolution_clock::now();
@@ -703,10 +714,12 @@ List process_all_combinations_cpp_gram(
 
   // Split the tree into branches deep enough that no single branch holds
   // more than a small share of the work (keeps every thread busy even when
-  // the first branch is by far the biggest, e.g. 15 of 26)
+  // the first branch is by far the biggest, e.g. 15 of 26), and no more than
+  // ~5M combinations: each branch runs on one thread, so a bigger one leaves
+  // the other threads idle at the end of every ~TARGET_BATCH_MS batch
   int n_threads = std::max(1u, std::thread::hardware_concurrency());
   int D = 0;
-  while (D < k - 1 && calculate_combinations_double(p - D, k - D) > n_combos_d / (8.0 * n_threads) &&
+  while (D < k - 1 && calculate_combinations_double(p - D, k - D) > std::min(n_combos_d / (8.0 * n_threads), 5e6) &&
          calculate_combinations_double(p, D + 1) <= 5e6) ++D;
   if (D == 0 && k > 1) D = 1;
   std::vector<int> tasks, cur(D);
@@ -722,8 +735,9 @@ List process_all_combinations_cpp_gram(
 
   auto start_time = std::chrono::high_resolution_clock::now();
   // Work in batches of branches: lets the user interrupt, and drives the
-  // progress bar (dispatch granularity -- decoupled from print rate below)
-  double batch_target = std::max(n_combos_d / 60.0, 2e7);
+  // progress bar. The first batch is a small fixed size; every later one is
+  // sized from measured throughput to take ~TARGET_BATCH_MS
+  double batch_target = 2e7;
   double last_print_ms = -MIN_UPDATE_INTERVAL_MS;
   double done = 0;
   int b0 = 0;
@@ -738,9 +752,11 @@ List process_all_combinations_cpp_gram(
     b0 = b1;
     Rcpp::checkUserInterrupt();
 
+    auto now = std::chrono::high_resolution_clock::now();
+    double ms_since_start = std::chrono::duration<double, std::milli>(now - start_time).count();
+    batch_target = std::max(done / std::max(ms_since_start, 1.0) * TARGET_BATCH_MS, 1e5);
+
     if (show_progress) {
-      auto now = std::chrono::high_resolution_clock::now();
-      double ms_since_start = std::chrono::duration_cast<std::chrono::milliseconds>(now - start_time).count();
       bool is_last_batch = (b0 == n_tasks);
       if (ms_since_start - last_print_ms >= MIN_UPDATE_INTERVAL_MS || is_last_batch) {
         last_print_ms = ms_since_start;
