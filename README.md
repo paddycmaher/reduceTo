@@ -91,6 +91,8 @@ result <- reduceTo(data = large_item_bank, n.items = 10)
 
 3\. Exhaustive search: finds the best set in the refined pool by brute force
 
+When keeping most of a scale (e.g. 50 of 60), choosing which items to keep is choosing which few to drop, so reduceTo works from the other side: Synergistic RFE scores the scale with k = 2, 3, ... items removed, keeps outright the items whose removal always hurts, and the exhaustive search then chooses which of the rest to drop.
+
 ### Cross-Validation
 
 ``` r
@@ -120,7 +122,7 @@ result <- reduceTo(
 | Parameter | Description | Default |
 |----------------|-----------------------------------------|----------------|
 | `optimise` | If `TRUE`, runs Synergistic RFE to narrow the item pool via exhaustive small-k scoring when combinations exceed `ceiling`; if `FALSE`, forces exhaustive search regardless of `ceiling` | `TRUE` |
-| `prefilter.ratio` | Before optimisation runs, drop items whose relevance is more than this many times weaker than the strongest item (set `Inf`/`NULL` to disable) | `5` |
+| `prefilter.ratio` | Before optimisation runs, drop items whose relevance is more than this many times weaker than the strongest item, when at least twice `n.items` survive (set `Inf`/`NULL` to disable) | `5` |
 | `ceiling` | Combination threshold for the final search | `100,000,000` (`10,000,000` with `speed = "conservative"`) |
 | `rfe.budget` | Combination threshold per intermediate Synergistic RFE round (as opposed to `ceiling`, which bounds only the final search) | `100,000,000` (`10,000,000` with `speed = "conservative"`) |
 | `opt.n` | Max rows to subsample during optimisation (speeds up large N) | `20000` |

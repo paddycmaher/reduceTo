@@ -31,12 +31,15 @@
 #' @param optimise If TRUE (default), runs the Synergistic RFE optimisation algorithm
 #'   when combinations exceed \code{ceiling} -- exhaustively scoring small-k combinations
 #'   and progressively narrowing the item pool, keeping the items with the best achieved
-#'   score at each step. If FALSE, forces exhaustive search regardless of \code{ceiling}
-#'   (can be slow)
+#'   score at each step. When keeping more than half the pool (e.g. 50 of 60), it works
+#'   from the other side: scoring the scale with small-k sets of items removed, and keeping
+#'   outright the items whose removal always hurts. If FALSE, forces exhaustive search
+#'   regardless of \code{ceiling} (can be slow)
 #' @param prefilter.ratio Drops items whose relevance (correlation with the target, or
 #'   item-total centrality with no target) is more than \code{prefilter.ratio} times
-#'   weaker than the strongest item, before optimisation runs. Never prunes below
-#'   \code{n.items} columns. Set to \code{Inf} or \code{NULL} to disable (default: 5)
+#'   weaker than the strongest item, before optimisation runs. Only applies when at least
+#'   twice \code{n.items} items survive, so the search still has real choices left. Set to
+#'   \code{Inf} or \code{NULL} to disable (default: 5)
 #' @param opt.n The maximum number of cases (rows) to subsample during heuristic
 #'   optimisation (default: 20000). Raising this improves both average recovered
 #'   r and run-to-run consistency at negligible time cost, since the optimisation
@@ -333,6 +336,20 @@ reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALS
     )
   }
 
+  # Moments for scoring "a fixed base block of items, plus (sign = 1) or minus
+  # (sign = -1) k chosen items" with the ordinary Gram engine. Every
+  # combination holds exactly k items, so the base block's own moments can be
+  # spread evenly over them: the engine's plain sum over the k chosen items
+  # then reproduces base +/- sum(chosen) exactly, with no C++ changes
+  fold_base_into_moments <- function(gc, chosen, base, k, sign) {
+    C <- gc$gram - outer(gc$col_sums, gc$col_sums) / gc$n_valid
+    tt <- gc$col_target_dots - gc$col_sums * gc$sum_target / gc$n_valid
+    gram <- C[chosen, chosen, drop = FALSE] + sum(C[base, base]) / k^2
+    diag(gram) <- diag(gram) + 2 * sign * rowSums(C[chosen, base, drop = FALSE])
+    list(gram = gram, col_sums = rep(0, length(chosen)),
+         col_target_dots = sign * tt[chosen] + sum(tt[base]) / k)
+  }
+
   # Bounds intermediate scoring cost during Synergistic RFE, not final pool
   # size (tuned empirically against recovery-rate tests, not a formula).
   RFE_BUDGET <- rfe.budget
@@ -358,6 +375,7 @@ reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALS
   # wrong, independently of how accurate the throughput calibration is.
   predict_narrowing_final_pool_size <- function(start_pool_size, n.items, ceiling) {
     pool_size <- start_pool_size
+    final_floor <- largest_pool_under_budget(start_pool_size, n.items, ceiling, n.items)
     k <- min(2, n.items)
     max_rounds <- n.items + 5
     round_i <- 0
@@ -365,7 +383,7 @@ reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALS
       round_i <- round_i + 1
       next_k <- min(k + 1, n.items)
       budget_for_next <- if (next_k >= n.items) ceiling else RFE_BUDGET
-      pool_size <- largest_pool_under_budget(pool_size, next_k, budget_for_next, n.items)
+      pool_size <- max(largest_pool_under_budget(pool_size, next_k, budget_for_next, n.items), final_floor)
       k <- next_k
     }
     pool_size
@@ -428,7 +446,69 @@ reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALS
     # visual line, so \r can fully clear/overwrite it.
     prog_width <- max(getOption("width", 80L) - 1L, 20L)
 
+    # Complement mode: when keeping more than half the pool (e.g. 50 of 60),
+    # choosing which items to keep is choosing which few to DROP -- and small-k
+    # rankings say little about which items belong in a 50-item set. So rank
+    # items by how good the scale is with them removed instead: score
+    # "pool minus k items" exactly as narrowing scores "k items", and narrow
+    # the candidates for dropping. Items that leave the candidates are kept
+    # outright, and the final search only chooses among the rest
+    n_drop <- length(current_cols) - n.items
+    if (used_gram && n_drop < n.items) {
+      cand <- current_cols
+      final_floor <- largest_pool_under_budget(length(cand), n_drop, ceiling, n_drop)
+      k <- min(2, n_drop)
+      round_i <- 0
+      while (choose(length(cand), n_drop) > ceiling && round_i < n_drop + 5) {
+        round_i <- round_i + 1
+        n_cand <- length(cand)
+        k <- skip_to_meaningful_k(n_cand, k, n_drop, ceiling)
+
+        if (show.progress) {
+          msg <- sprintf("~{ SynergisticRFE }~ scoring removals at k = %d from pool = %d", k, n_cand)
+          if (nchar(msg) > prog_width) msg <- substr(msg, 1, prog_width)
+          cat("\r", formatC(msg, width = -prog_width), sep = "")
+          flush.console()
+        }
+
+        folded <- fold_base_into_moments(gc_components, cand, current_cols, k, sign = -1)
+        cpp_result <- process_all_combinations_cpp_gram(
+          gram = folded$gram,
+          col_sums = folded$col_sums,
+          col_target_dots = folded$col_target_dots,
+          sum_target = sum_target,
+          sum_target_sq = sum_target_sq,
+          n_valid = n_valid,
+          n_items = k,
+          num_choose_from = n_cand,
+          original_indices = cand,
+          keep_top = 1,
+          show_progress = FALSE
+        )
+
+        # item_best is now the best |r| of the scale left after removing that
+        # item (with k - 1 others): high = a good candidate for dropping
+        ranked <- cand[order(cpp_result$item_best, decreasing = TRUE)]
+        next_k <- min(k + 1, n_drop)
+        budget_for_next <- if (next_k >= n_drop) ceiling else RFE_BUDGET
+        cand <- ranked[1:max(largest_pool_under_budget(n_cand, next_k, budget_for_next, n_drop), final_floor)]
+        k <- next_k
+      }
+
+      fixed <- setdiff(current_cols, cand)
+      if (show.progress) {
+        final_msg <- sprintf("~{ SynergisticRFE }~ converged: keeping %d items outright, optimised search space to %d items", length(fixed), length(cand))
+        cat("\r", formatC(final_msg, width = -prog_width), "\n", sep = "")
+      }
+      return(list(pool = current_cols, fixed = fixed))
+    }
+
     pool <- current_cols
+    # Never narrow below the largest pool the final search can afford: when
+    # n.items is large (e.g. 50 of 60), the look-ahead budget for the next
+    # small k would otherwise shrink the pool straight to n.items, so the
+    # final set was decided by small-k rankings with no final search at all
+    final_floor <- largest_pool_under_budget(length(pool), n.items, ceiling, n.items)
     k <- min(2, n.items)
     max_rounds <- n.items + 5  # safety cap; should converge in at most n.items-1 rounds
     round_i <- 0
@@ -505,7 +585,7 @@ reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALS
       # ceiling would otherwise allow.
       next_k <- min(k + 1, n.items)
       budget_for_next <- if (next_k >= n.items) ceiling else RFE_BUDGET
-      target_pool_size <- largest_pool_under_budget(n_pool, next_k, budget_for_next, n.items)
+      target_pool_size <- max(largest_pool_under_budget(n_pool, next_k, budget_for_next, n.items), final_floor)
 
       pool <- ranked[1:target_pool_size]
       k <- next_k
@@ -522,7 +602,7 @@ reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALS
       cat("\r", formatC(final_msg, width = -prog_width), "\n", sep = "")
     }
 
-    return(pool)
+    return(list(pool = pool, fixed = integer(0)))
   }
 
   # One shift/scale shared by ALL columns, not one per column: rescaling
@@ -568,7 +648,7 @@ reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALS
                                               original_indices, na.rm,
                                               is_binary, n.items, ranking_metric,
                                               optimize_for, show.progress, keep_top,
-                                              speed) {
+                                              speed, fixed = integer(0)) {
 
     used_fast_path <- identical(speed, "fast")
 
@@ -577,19 +657,42 @@ reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALS
       gc_components <- build_gram_components(data, targ)
       mark_time("gram_matrix_build")
 
+      # Items kept outright by complement-mode narrowing are folded into the
+      # moments, so only the remaining (free) items are searched. And when
+      # keeping more than half of the free items, enumerate the few to DROP
+      # instead: same combinations and exact same scores, but the engine's
+      # cost per combination grows steeply with k (28 of 40 ran ~20x slower
+      # than the equally-sized 12 of 40)
+      free <- setdiff(seq_len(num_choose_from), fixed)
+      k_free <- n.items - length(fixed)
+      n_drop <- length(free) - k_free
+      drop_space <- n_drop >= 1 && n_drop < k_free
+      search <- if (drop_space) {
+        fold_base_into_moments(gc_components, free, seq_len(num_choose_from), n_drop, sign = -1)
+      } else if (length(fixed) > 0) {
+        fold_base_into_moments(gc_components, free, fixed, k_free, sign = 1)
+      } else gc_components
+
       cpp_result <- process_all_combinations_cpp_gram(
-        gram = gc_components$gram,
-        col_sums = gc_components$col_sums,
-        col_target_dots = gc_components$col_target_dots,
+        gram = search$gram,
+        col_sums = search$col_sums,
+        col_target_dots = search$col_target_dots,
         sum_target = gc_components$sum_target,
         sum_target_sq = gc_components$sum_target_sq,
         n_valid = gc_components$n_valid,
-        n_items = n.items,
-        num_choose_from = num_choose_from,
-        original_indices = original_indices,
+        n_items = if (drop_space) n_drop else k_free,
+        num_choose_from = length(free),
+        original_indices = original_indices[free],
         keep_top = keep_top,
         show_progress = show.progress
       )
+      # Report every combination as its full item set
+      if (drop_space) {
+        cpp_result$combination <- vapply(strsplit(cpp_result$combination, ","), function(d)
+          paste(setdiff(original_indices, as.numeric(d)), collapse = ","), character(1))
+      } else if (length(fixed) > 0) {
+        cpp_result$combination <- paste(paste(original_indices[fixed], collapse = ","), cpp_result$combination, sep = ",")
+      }
       mark_time("cpp_scoring_call")
     } else {
       compressed_data <- compress_for_cpp(data)
@@ -1165,7 +1268,7 @@ reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALS
   
   # Shared by both runtime estimates printed when verbose: when optimisation is
   # triggered, and when optimise = FALSE forces a search past ceiling
-  measure_combos_per_sec <- function() {
+  measure_combos_per_sec <- function(k = n.items) {
 
     # Measure real combinations/sec on this machine to estimate runtime.
     # A single small timed call is heavily biased toward one-time fixed
@@ -1181,7 +1284,7 @@ reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALS
     # n.items under the (much slower) row-scan engine.
     grow_pool_to_combos <- function(target_combos, start_p, max_p) {
       p <- start_p
-      while (p < max_p && choose(p, n.items) < target_combos) p <- p + 1
+      while (p < max_p && choose(p, k) < target_combos) p <- p + 1
       p
     }
 
@@ -1207,13 +1310,13 @@ reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALS
           sum_target = sum(targ_valid),
           sum_target_sq = sum(targ_valid^2),
           n_valid = length(targ_valid),
-          n_items = n.items,
+          n_items = k,
           num_choose_from = p,
           original_indices = 1:p,
           keep_top = 1,
           show_progress = FALSE
         ))
-        list(elapsed = as.numeric(difftime(Sys.time(), t0, units = "secs")), combos = choose(p, n.items))
+        list(elapsed = as.numeric(difftime(Sys.time(), t0, units = "secs")), combos = choose(p, k))
       }
 
     } else {
@@ -1222,7 +1325,7 @@ reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALS
         t0 <- Sys.time()
         invisible(process_all_combinations_cpp_parallel_float(
           data = calib_compressed,
-          n_items = n.items,
+          n_items = k,
           num_choose_from = p,
           na_rm = na.rm,
           target = target,
@@ -1230,11 +1333,11 @@ reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALS
           keep_top = 1,
           show_progress = FALSE
         ))
-        list(elapsed = as.numeric(difftime(Sys.time(), t0, units = "secs")), combos = choose(p, n.items))
+        list(elapsed = as.numeric(difftime(Sys.time(), t0, units = "secs")), combos = choose(p, k))
       }
     }
 
-    p0 <- grow_pool_to_combos(TINY_CALIB_COMBOS, n.items, ncol(data))
+    p0 <- grow_pool_to_combos(TINY_CALIB_COMBOS, k, ncol(data))
     run_calib_at(p0)  # untimed warm-up
     tiny <- run_calib_at(p0)
     tiny_rate <- tiny$combos / max(tiny$elapsed, 1e-6)
@@ -1262,6 +1365,7 @@ reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALS
 
   # Check if optimization is needed
   num_combinations <- choose(ncol(data), n.items)
+  fixed_cols <- integer(0)
 
   if (num_combinations > ceiling) {
 
@@ -1278,7 +1382,11 @@ reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALS
         keep_mask <- item_relevance >= (max(item_relevance, na.rm = TRUE) / prefilter.ratio)
         keep_mask[is.na(keep_mask)] <- TRUE  # never drop items with undefined relevance
 
-        if (sum(keep_mask) >= n.items) {
+        # Only when the search would still choose fewer than half of what's
+        # left: otherwise the prefilter decides the answer on single-item
+        # relevance alone (24 of 26 survivors missed the best 24-of-36 set by
+        # up to r = .04 -- long scales can need individually weak items)
+        if (sum(keep_mask) >= 2 * n.items) {
           n_before <- length(cols)
           cols <- cols[keep_mask]
           if (length(cols) < n_before) {
@@ -1293,8 +1401,12 @@ reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALS
       # cost ~20% of a typical run with verbose = FALSE, for nothing)
       if (verbose) {
 
-        combos_per_sec <- measure_combos_per_sec()
-
+        # The fast engine searches whichever side is smaller -- the items to
+        # keep, or (when keeping more than half) the items to drop -- so time
+        # it at that size
+        n_drop <- length(cols) - n.items
+        complement <- identical(speed, "fast") && n_drop < n.items
+        combos_per_sec <- measure_combos_per_sec(if (complement) n_drop else n.items)
 
         est_seconds <- num_combinations / combos_per_sec
         # Predict the final search's actual combination count by replaying
@@ -1304,8 +1416,17 @@ reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALS
         # pool-size decrement can land well under ceiling, especially for
         # larger n.items, so that assumption can be wrong by orders of
         # magnitude on its own, independent of calibration accuracy.
-        predicted_final_pool_size <- predict_narrowing_final_pool_size(length(cols), n.items, ceiling)
-        predicted_final_combos <- choose(predicted_final_pool_size, n.items)
+        # (complement mode narrows the candidates for dropping with the same
+        # schedule, so the same replay applies with n_drop in place of n.items)
+        if (complement) {
+          predicted_final_pool_size <- predict_narrowing_final_pool_size(length(cols), n_drop, ceiling)
+          predicted_final_combos <- choose(predicted_final_pool_size, n_drop)
+          n_kept_outright <- length(cols) - predicted_final_pool_size
+        } else {
+          predicted_final_pool_size <- predict_narrowing_final_pool_size(length(cols), n.items, ceiling)
+          predicted_final_combos <- choose(predicted_final_pool_size, n.items)
+          n_kept_outright <- 0
+        }
         opt_est_seconds <- predicted_final_combos / combos_per_sec
 
         message(paste0("=~ This would generate ",
@@ -1314,18 +1435,21 @@ reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALS
                        " with N = ",format(nrow(data), big.mark = ",",scientific = FALSE) ,
                        "). \n=~ Synergistic RFE will be used to reduce combinations to below ",
                        format(ceiling, big.mark = ",",scientific = FALSE),
-                       " (search space: ",n.items," items from ",predicted_final_pool_size,
+                       " (search space: ",n.items - n_kept_outright," items from ",predicted_final_pool_size,
+                       if (n_kept_outright > 0) paste0(", plus ", n_kept_outright, " kept outright"),
                        "; ",format_duration_range(opt_est_seconds/2, opt_est_seconds*2),
                        ").",
                        " You can change this threshold with the 'ceiling' argument."))
         if (!is.null(prefilter_message)) message(prefilter_message)
       }
 
-      cols <- perform_synergy_ranked_elimination(cols, data, n.items, ceiling, target, na.rm, opt.n, speed, show.progress)
+      narrowed <- perform_synergy_ranked_elimination(cols, data, n.items, ceiling, target, na.rm, opt.n, speed, show.progress)
+      cols <- narrowed$pool
+      fixed_cols <- narrowed$fixed
 
     } else {
       if (verbose) {
-        est_seconds <- num_combinations / measure_combos_per_sec()
+        est_seconds <- num_combinations / measure_combos_per_sec(if (identical(speed, "fast")) min(n.items, ncol(data) - n.items) else n.items)
         message(sprintf("=~ Note: %s combinations exceeds ceiling (%s) but optimise = FALSE. Running exhaustive search: expected completion time is %s.",
                         format(num_combinations, big.mark = ",", scientific = FALSE),
                         format(ceiling, big.mark = ",", scientific = FALSE),
@@ -1379,7 +1503,7 @@ reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALS
                                                  original_indices, na.rm,
                                                  is_binary, n.items, ranking_metric,
                                                  optimize_for, show.progress, leaderboard_length,
-                                                 speed)
+                                                 speed, fixed = match(fixed_cols, cols))
 
   leaderboard <- cpp_results$leaderboard
   timings_cpp <- cpp_results$timings_cpp                                                                                                                   

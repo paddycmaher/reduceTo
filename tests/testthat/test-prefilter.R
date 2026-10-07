@@ -42,3 +42,17 @@ test_that("prefilter.ratio = Inf and NULL both skip the prefilter step", {
     message = "Prefilter"
   )
 })
+
+test_that("prefilter stands aside when fewer than twice n.items items would survive", {
+  set.seed(3)
+  n <- 500
+  strong <- matrix(rnorm(n * 4), ncol = 4)
+  target <- rowMeans(strong) + rnorm(n, 0, 0.3)
+  noise <- matrix(rnorm(n * 20), ncol = 20)
+  data <- as.data.frame(cbind(strong, noise))
+
+  # 4 survivors: enough to prefilter for 2 items, but choosing 3 of 4 would
+  # leave the answer to single-item relevance alone
+  expect_message(reduceTo(data, n.items = 2, target = target, ceiling = 50, show.progress = FALSE), "Prefilter")
+  expect_no_message(reduceTo(data, n.items = 3, target = target, ceiling = 50, show.progress = FALSE), message = "Prefilter")
+})

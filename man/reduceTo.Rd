@@ -54,13 +54,16 @@ sets; if TRUE or 1, uses a 75\%/25\% split (default: FALSE)}
 \item{optimise}{If TRUE (default), runs the Synergistic RFE optimisation algorithm
 when combinations exceed \code{ceiling} -- exhaustively scoring small-k combinations
 and progressively narrowing the item pool, keeping the items with the best achieved
-score at each step. If FALSE, forces exhaustive search regardless of \code{ceiling}
-(can be slow)}
+score at each step. When keeping more than half the pool (e.g. 50 of 60), it works
+from the other side: scoring the scale with small-k sets of items removed, and keeping
+outright the items whose removal always hurts. If FALSE, forces exhaustive search
+regardless of \code{ceiling} (can be slow)}
 
 \item{prefilter.ratio}{Drops items whose relevance (correlation with the target, or
 item-total centrality with no target) is more than \code{prefilter.ratio} times
-weaker than the strongest item, before optimisation runs. Never prunes below
-\code{n.items} columns. Set to \code{Inf} or \code{NULL} to disable (default: 5)}
+weaker than the strongest item, before optimisation runs. Only applies when at least
+twice \code{n.items} items survive, so the search still has real choices left. Set to
+\code{Inf} or \code{NULL} to disable (default: 5)}
 
 \item{opt.n}{The maximum number of cases (rows) to subsample during heuristic
 optimisation (default: 20000). Raising this improves both average recovered
