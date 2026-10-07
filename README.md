@@ -91,6 +91,8 @@ result <- reduceTo(data = large_item_bank, n.items = 10)
 
 3\. Exhaustive search: finds the best set in the refined pool by brute force
 
+4\. Swap polish: starting from the best sets found, tries exchanging 1 or 2 items with any item in the original pool, keeping each swap that improves the score until none does -- recovering true items that narrowing removed
+
 When keeping most of a scale (e.g. 50 of 60), choosing which items to keep is choosing which few to drop, so reduceTo works from the other side: Synergistic RFE scores the scale with k = 2, 3, ... items removed, keeps outright the items whose removal always hurts, and the exhaustive search then chooses which of the rest to drop.
 
 ### Cross-Validation

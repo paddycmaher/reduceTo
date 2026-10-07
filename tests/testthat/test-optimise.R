@@ -70,3 +70,40 @@ test_that("narrowing never shrinks the pool below what the final search can affo
     "search space to 22 items"
   )
 })
+
+make_facet_data <- function(seed, n = 600) {
+  set.seed(seed)
+  g <- rnorm(n)
+  fac <- sapply(1:4, function(i) rnorm(n))
+  as.data.frame(sapply(1:24, function(j) runif(1, 0.3, 0.8) * g + runif(1, 0.3, 0.9) * fac[, (j - 1) %/% 6 + 1] + rnorm(n)))
+}
+
+test_that("swap polish recovers items narrowing cut (keep side) or kept outright (drop side)", {
+  data <- make_facet_data(1)
+  for (k in c(8, 16)) {
+    r_opt <- reduceTo(data, n.items = k, ceiling = 1000, rfe.budget = 1000, show.progress = FALSE, verbose = FALSE)
+    r_exh <- reduceTo(data, n.items = k, optimise = FALSE, show.progress = FALSE, verbose = FALSE)
+    expect_equal(r_opt$r, r_exh$r)
+    expect_setequal(r_opt$best_names, r_exh$best_names)
+  }
+})
+
+test_that("items brought back by the polish work through missing data, cross-validation and binary targets", {
+  data <- make_facet_data(3)
+  target <- as.numeric(rowMeans(data) + rnorm(600) > 0)
+  set.seed(9)
+  data_na <- data
+  data_na[matrix(runif(600 * 24) < 0.1, 600)] <- NA
+
+  r_na <- reduceTo(data_na, n.items = 8, cross.validate = TRUE, ceiling = 1000, rfe.budget = 1000,
+                   item.names = TRUE, show.progress = FALSE, verbose = FALSE)
+  r_bin <- reduceTo(data, n.items = 8, target = target, cross.validate = TRUE, ceiling = 1000, rfe.budget = 1000,
+                    item.names = TRUE, show.progress = FALSE, verbose = FALSE)
+
+  for (r in list(r_na, r_bin)) {
+    expect_length(r$best_names, 8)
+    expect_true(all(r$best_names %in% names(data)))
+    expect_true(all(r$best_names %in% r$final_pool_items))
+    expect_false(is.na(r$output$r_holdout[1]))
+  }
+})

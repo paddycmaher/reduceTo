@@ -33,8 +33,9 @@
 #'   and progressively narrowing the item pool, keeping the items with the best achieved
 #'   score at each step. When keeping more than half the pool (e.g. 50 of 60), it works
 #'   from the other side: scoring the scale with small-k sets of items removed, and keeping
-#'   outright the items whose removal always hurts. If FALSE, forces exhaustive search
-#'   regardless of \code{ceiling} (can be slow)
+#'   outright the items whose removal always hurts. The best sets found are then polished
+#'   by swapping 1 or 2 items with any item in the pool, recovering items that narrowing
+#'   removed. If FALSE, forces exhaustive search regardless of \code{ceiling} (can be slow)
 #' @param prefilter.ratio Drops items whose relevance (correlation with the target, or
 #'   item-total centrality with no target) is more than \code{prefilter.ratio} times
 #'   weaker than the strongest item, before optimisation runs. Only applies when at least
@@ -350,6 +351,63 @@ reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALS
          col_target_dots = sign * tt[chosen] + sum(tt[base]) / k)
   }
 
+  # Swap polish: narrowing's cuts are permanent, so a true item it removed (or
+  # kept outright) never reaches the final search. Starting from the best sets
+  # found, hill-climb over the WHOLE pool with 1-item swaps, then 2-item swaps,
+  # each scored exactly from the same moments as the search in O(1), until no
+  # swap improves. Judging items inside a complete near-optimal set catches
+  # what small-k rankings miss (16 of 40 at the default budget: exact optimum
+  # in 2 of 5 domains -> 5 of 5). Returns each polished set as an index string
+  polish_by_swaps <- function(data, targ, idx, starts) {
+    MAX_STEPS <- 100           # safety cap; converges in a few steps from good starts
+    CHUNK <- 1e6               # 2-swap candidates scored per block (bounds memory)
+    MAX_2SWAP <- 5e7           # beyond this many 2-swaps per step, 1-swaps only
+    gc <- build_gram_components(data, targ)
+    C <- gc$gram - outer(gc$col_sums, gc$col_sums) / gc$n_valid
+    tt <- gc$col_target_dots - gc$col_sums * gc$sum_target / gc$n_valid
+    dC <- diag(C); p <- ncol(data)
+    # |r| up to the constant sqrt(ssy)
+    score <- function(Tn, Qn) { s <- abs(Tn) / sqrt(pmax(Qn, 0)); s[!(Qn > 0)] <- -Inf; s }
+
+    vapply(strsplit(starts, ","), function(z) {
+      S <- match(as.numeric(z), idx)
+      for (step in seq_len(MAX_STEPS)) {
+        O <- setdiff(seq_len(p), S)
+        if (length(O) == 0) break
+        a <- rowSums(C[, S, drop = FALSE]); Tn <- sum(tt[S]); Q <- sum(a[S]); s0 <- score(Tn, Q)
+
+        # Remove i, add j: T - t_i + t_j, Q - 2a_i + C_ii + 2a_j - 2C_ij + C_jj
+        s1 <- score(outer(Tn - tt[S], tt[O], "+"),
+                    outer(Q - 2 * a[S] + dC[S], 2 * a[O] + dC[O], "+") - 2 * C[S, O, drop = FALSE])
+        if (max(s1) > s0 * (1 + 1e-12)) {
+          w <- arrayInd(which.max(s1), dim(s1)); S <- c(S[-w[1]], O[w[2]]); next
+        }
+
+        if (length(S) < 2 || length(O) < 2 || choose(length(S), 2) * choose(length(O), 2) > MAX_2SWAP) break
+        ip <- utils::combn(length(S), 2); jp <- utils::combn(length(O), 2)
+        j1 <- O[jp[1, ]]; j2 <- O[jp[2, ]]
+        add_j <- 2 * a[j1] + dC[j1] + 2 * a[j2] + dC[j2] + 2 * C[cbind(j1, j2)]
+        best <- s0 * (1 + 1e-12); best_swap <- NULL
+        rows_per_chunk <- max(1, floor(CHUNK / length(j1)))
+        for (from in seq(1, ncol(ip), by = rows_per_chunk)) {
+          cols_i <- from:min(from + rows_per_chunk - 1, ncol(ip))
+          i1 <- S[ip[1, cols_i]]; i2 <- S[ip[2, cols_i]]
+          # Remove i1, i2 then add j1, j2 (cross terms with the removed pair subtracted)
+          Q_rem <- Q - 2 * a[i1] - 2 * a[i2] + dC[i1] + dC[i2] + 2 * C[cbind(i1, i2)]
+          cross <- C[i1, j1, drop = FALSE] + C[i2, j1, drop = FALSE] + C[i1, j2, drop = FALSE] + C[i2, j2, drop = FALSE]
+          s2 <- score(outer(Tn - tt[i1] - tt[i2], tt[j1] + tt[j2], "+"), outer(Q_rem, add_j, "+") - 2 * cross)
+          if (max(s2) > best) {
+            w <- arrayInd(which.max(s2), dim(s2)); best <- max(s2)
+            best_swap <- c(i1[w[1]], i2[w[1]], j1[w[2]], j2[w[2]])
+          }
+        }
+        if (is.null(best_swap)) break
+        S <- c(setdiff(S, best_swap[1:2]), best_swap[3:4])
+      }
+      paste(idx[sort(S)], collapse = ",")
+    }, character(1))
+  }
+
   # Bounds intermediate scoring cost during Synergistic RFE, not final pool
   # size (tuned empirically against recovery-rate tests, not a formula).
   RFE_BUDGET <- rfe.budget
@@ -648,7 +706,7 @@ reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALS
                                               original_indices, na.rm,
                                               is_binary, n.items, ranking_metric,
                                               optimize_for, show.progress, keep_top,
-                                              speed, fixed = integer(0)) {
+                                              speed, fixed = integer(0), polish_pool = NULL) {
 
     used_fast_path <- identical(speed, "fast")
 
@@ -717,6 +775,28 @@ reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALS
       r = cpp_result$r,
       stringsAsFactors = FALSE
     )
+
+    # When optimisation left items out of this search, polish the top sets
+    # over the whole pool. New sets are only ADDED (and re-scored exactly
+    # below), so the reported best can never get worse; any item they bring
+    # back is added to the scored columns and reported to the caller
+    added <- numeric(0)
+    if (!is.null(polish_pool)) {
+      POLISH_STARTS <- 5
+      polished <- polish_by_swaps(polish_pool$data, targ, polish_pool$original_indices,
+                                  head(leaderboard$combination, POLISH_STARTS))
+      known <- vapply(strsplit(leaderboard$combination, ","), function(z) paste(sort(as.numeric(z)), collapse = ","), character(1))
+      polished <- setdiff(unique(polished), known)
+      if (length(polished) > 0) {
+        leaderboard <- rbind(data.frame(combination = polished, r = NA_real_, stringsAsFactors = FALSE), leaderboard)
+        added <- setdiff(unique(as.numeric(unlist(strsplit(polished, ",")))), original_indices)
+        if (length(added) > 0) {
+          data <- cbind(data, polish_pool$data[, match(added, polish_pool$original_indices), drop = FALSE])
+          original_indices <- c(original_indices, added)
+        }
+      }
+      mark_time("swap_polish")
+    }
 
     # Recompute exact statistics for the top `keep_top` combinations from the
     # true data (both scoring engines above work from approximated data).
@@ -812,7 +892,8 @@ reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALS
 
     cpp_results <- list(leaderboard = leaderboard,
                         timings_cpp = cpp_result$timings_cpp,
-                        used_fast_path = used_fast_path)
+                        used_fast_path = used_fast_path,
+                        added = added)
 
     return(cpp_results)
   }
@@ -1462,6 +1543,12 @@ reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALS
   
   mark_time("combination_optimisation")
   
+  # Keep the whole pool for the swap polish whenever the final search won't
+  # cover every item (narrowed, prefiltered, or items kept outright)
+  needs_polish <- length(cols) < ncol(data) || length(fixed_cols) > 0
+  pool_data <- data
+  pool_holdout <- if (cross.validate) data_holdout else NULL
+
   # Subset to optimized columns
   data <- data[, cols, drop = FALSE]
   if (cross.validate) { data_holdout <- data_holdout[, cols, drop = FALSE] }
@@ -1487,6 +1574,7 @@ reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALS
   }
   
   # Update index mapping after filtering
+  pool_indices <- original_indices
   original_indices <- original_indices[cols]
   
   if (n.items > ncol(data)) {
@@ -1503,7 +1591,18 @@ reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALS
                                                  original_indices, na.rm,
                                                  is_binary, n.items, ranking_metric,
                                                  optimize_for, show.progress, leaderboard_length,
-                                                 speed, fixed = match(fixed_cols, cols))
+                                                 speed, fixed = match(fixed_cols, cols),
+                                                 polish_pool = if (needs_polish) list(data = pool_data, original_indices = pool_indices))
+
+  # Items the swap polish brought back join the scored columns
+  if (length(cpp_results$added) > 0) {
+    cols <- c(cols, match(cpp_results$added, pool_indices))
+    cols_names <- filtered_names[cols]
+    data <- pool_data[, cols, drop = FALSE]
+    if (cross.validate) { data_holdout <- pool_holdout[, cols, drop = FALSE] }
+    original_indices <- pool_indices[cols]
+  }
+  rm(pool_data, pool_holdout)
 
   leaderboard <- cpp_results$leaderboard
   timings_cpp <- cpp_results$timings_cpp                                                                                                                   

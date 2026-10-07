@@ -56,8 +56,9 @@ when combinations exceed \code{ceiling} -- exhaustively scoring small-k combinat
 and progressively narrowing the item pool, keeping the items with the best achieved
 score at each step. When keeping more than half the pool (e.g. 50 of 60), it works
 from the other side: scoring the scale with small-k sets of items removed, and keeping
-outright the items whose removal always hurts. If FALSE, forces exhaustive search
-regardless of \code{ceiling} (can be slow)}
+outright the items whose removal always hurts. The best sets found are then polished
+by swapping 1 or 2 items with any item in the pool, recovering items that narrowing
+removed. If FALSE, forces exhaustive search regardless of \code{ceiling} (can be slow)}
 
 \item{prefilter.ratio}{Drops items whose relevance (correlation with the target, or
 item-total centrality with no target) is more than \code{prefilter.ratio} times
