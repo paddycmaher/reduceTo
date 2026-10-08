@@ -205,28 +205,6 @@ reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALS
     cv / outer(sds, sds)
   }
 
-  # Standalone AUC (same Mann-Whitney U, ties counted half, as the training
-  # set's exact re-scoring in rescore_sets_cpp) for holdout scoring, where
-  # the cutoff was already fixed from the training set and re-searching it
-  # would be both wrong and wasted work.
-  compute_auc <- function(scores, binary_target) {
-    valid <- !is.na(scores) & !is.na(binary_target)
-    s <- scores[valid]
-    t <- binary_target[valid]
-    n_pos <- as.double(sum(t == 1))
-    n_neg <- as.double(sum(t == 0))
-    if (n_pos == 0 || n_neg == 0) return(NA)
-
-    uniq <- sort(unique(s))
-    bin_idx <- match(s, uniq)
-    pos_counts <- tabulate(bin_idx[t == 1], nbins = length(uniq))
-    neg_counts <- tabulate(bin_idx[t == 0], nbins = length(uniq))
-    cum_neg_before <- cumsum(neg_counts) - neg_counts
-
-    u_stat <- sum(pos_counts * (cum_neg_before + 0.5 * neg_counts))
-    u_stat / (n_pos * n_neg)
-  }
-
   # Mean-impute missing values, then precompute the column moments (Gram
   # matrix, sums, target dot products) needed to score any item combination
   build_gram_components <- function(data, targ) {
@@ -818,59 +796,25 @@ reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALS
   }
   
   # Score every leaderboard item set on the holdout data
+  # Holdout statistics for every leaderboard row, scored in parallel C++ like
+  # the training set's exact re-scoring -- but at each row's TRAINING cutoff
+  # (re-searching it on the holdout would be both wrong and wasted work)
   cross_validate_leaderboard <- function(leaderboard, data, target,
                                          na.rm, is_binary, best_names) {
 
     if (nrow(data) == 0) stop("Holdout data is empty. Cannot cross-validate.")
 
-    n_rows <- nrow(data)
-    n_cols <- nrow(leaderboard)
-    scores_matrix <- matrix(NA, nrow = n_rows, ncol = n_cols)
+    sets <- matrix(unlist(lapply(best_names, function(nm) match(nm, colnames(data)))) - 1L,
+                   ncol = nrow(leaderboard))
+    storage.mode(sets) <- "integer"
+    held <- rescore_sets_cpp(as.matrix(data), as.numeric(target), sets, na.rm, is_binary, FALSE,
+                             fixed_cutoffs = if (is_binary) as.numeric(leaderboard$`>=`) else numeric(0))
 
-    for (i in 1:n_cols) {
-      current_items <- best_names[[i]]
-      if (length(current_items) == 1) {
-        scores_matrix[, i] <- data[[current_items]]
-      } else {
-        scores_matrix[, i] <- rowMeans(data[, current_items, drop = FALSE], na.rm = na.rm) * length(current_items)
-      }
-    }
-
+    leaderboard$r_holdout <- held$r
     if (is_binary) {
-      binary_matrix <- matrix(NA, nrow = n_rows, ncol = n_cols)
-      for (i in 1:n_cols) {
-        binary_matrix[, i] <- as.numeric(scores_matrix[, i] >= leaderboard$`>=`[i])
-      }
-    }
-
-    leaderboard$r_holdout <- as.vector(cor(scores_matrix, target, use = 'pairwise.complete.obs'))
-
-    if (is_binary) {
-      leaderboard$binarised_r_holdout <- as.vector(cor(binary_matrix, target, use = 'pairwise.complete.obs'))
-
-      leaderboard$youden_j_holdout <- sapply(1:n_cols, function(col_idx) {
-        preds <- binary_matrix[, col_idx]
-        actual <- target
-
-        valid <- !is.na(preds) & !is.na(actual)
-        preds <- preds[valid]
-        actual <- actual[valid]
-
-        tp <- sum(preds == 1 & actual == 1)
-        tn <- sum(preds == 0 & actual == 0)
-        fp <- sum(preds == 1 & actual == 0)
-        fn <- sum(preds == 0 & actual == 1)
-
-        if ((tp + fn) == 0 || (tn + fp) == 0) return(NA)
-
-        sensitivity <- tp / (tp + fn)
-        specificity <- tn / (tn + fp)
-        return(sensitivity + specificity - 1)
-      })
-
-      leaderboard$auc_holdout <- sapply(1:n_cols, function(col_idx) {
-        compute_auc(scores_matrix[, col_idx], target)
-      })
+      leaderboard$binarised_r_holdout <- held$binarised_r
+      leaderboard$youden_j_holdout <- held$youden_j
+      leaderboard$auc_holdout <- held$auc
     }
 
     return(leaderboard)

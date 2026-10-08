@@ -36,3 +36,39 @@ test_that("exact re-scoring matches a naive R reference (r, cutoff, Youden's J, 
     }
   }
 })
+
+test_that("holdout scoring at fixed training cutoffs matches a naive R reference", {
+  for (seed in 1:3) {
+    set.seed(seed)
+    n <- 300; f <- rnorm(n)
+    X <- sapply(1:8, function(j) pmin(pmax(round(f + rnorm(n) + 3), 1), 5))
+    X[matrix(runif(length(X)) < 0.15, n)] <- NA
+    y <- as.numeric(f + rnorm(n) > 0.2)
+    sets <- cbind(c(1, 2, 3), c(2, 5, 8), c(4, 6, 7))
+    cuts <- c(9, 10, NA)
+    for (na_rm in c(TRUE, FALSE)) {
+      got <- reduceTo:::rescore_sets_cpp(X, y, matrix(as.integer(sets - 1), nrow = 3), na_rm, TRUE, FALSE, cuts)
+      for (i in 1:3) {
+        s <- rowMeans(X[, sets[, i]], na.rm = na_rm) * 3
+        pred <- as.numeric(s >= cuts[i])
+        ok <- !is.na(pred) & !is.na(y)
+        tp <- sum(pred[ok] == 1 & y[ok] == 1); tn <- sum(pred[ok] == 0 & y[ok] == 0)
+        fp <- sum(pred[ok] == 1 & y[ok] == 0); fn <- sum(pred[ok] == 0 & y[ok] == 1)
+        sv <- !is.na(s); sp <- s[sv & y == 1]; sn <- s[sv & y == 0]
+        ref <- c(r = suppressWarnings(cor(s, y, use = "pairwise.complete.obs")),
+                 binarised_r = suppressWarnings(cor(pred, y, use = "pairwise.complete.obs")),
+                 youden_j = if (tp + fn == 0 || tn + fp == 0) NA else tp / (tp + fn) + tn / (tn + fp) - 1,
+                 auc = mean(outer(sp, sn, ">") + 0.5 * outer(sp, sn, "==")))
+        expect_equal(c(r = got$r[i], binarised_r = got$binarised_r[i], youden_j = got$youden_j[i], auc = got$auc[i]),
+                     ref, tolerance = 1e-12)
+      }
+    }
+  }
+})
+
+test_that("cross-validation works with n.items = 1", {
+  set.seed(1)
+  data <- as.data.frame(matrix(rnorm(400 * 6), 400))
+  r <- reduceTo(data, n.items = 1, cross.validate = TRUE, show.progress = FALSE, verbose = FALSE)
+  expect_false(is.na(r$output$r_holdout[1]))
+})

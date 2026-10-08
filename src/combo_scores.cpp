@@ -892,24 +892,55 @@ static void radix_sort_doubles(std::vector<double>& v, std::vector<uint64_t>& a,
   }
 }
 
+// Pearson r over pairwise-complete rows, two-pass like cor()
+static double pairwise_pearson(const std::vector<double>& x, const RVector<double>& y) {
+  const int n = (int)x.size();
+  long double sx = 0, sy = 0; int m = 0;
+  for (int i = 0; i < n; ++i) if (!std::isnan(x[i]) && !std::isnan(y[i])) { sx += x[i]; sy += y[i]; ++m; }
+  if (m < 2) return NA_REAL;
+  const long double mx = sx / m, my = sy / m;
+  long double sxy = 0, sxx = 0, syy = 0;
+  for (int i = 0; i < n; ++i) if (!std::isnan(x[i]) && !std::isnan(y[i])) {
+    const long double dx = x[i] - mx, dy = y[i] - my;
+    sxy += dx * dy; sxx += dx * dx; syy += dy * dy;
+  }
+  if (!(sxx > 0 && syy > 0)) return NA_REAL;
+  const long double n1 = m - 1;
+  sxx /= n1; syy /= n1; sxy /= n1;
+  return std::max(-1.0, std::min(1.0, (double)(sxy / (std::sqrt(sxx) * std::sqrt(syy)))));
+}
+
+// AUC (Mann-Whitney U, ties counted half) from each class's sorted scores
+static double auc_sorted(const std::vector<double>& pos, const std::vector<double>& neg) {
+  long double u = 0;                        // sum over positives of (#neg below + half #neg tied)
+  for (size_t ip = 0, in_lo = 0, in_hi = 0; ip < pos.size(); ++ip) {
+    while (in_lo < neg.size() && neg[in_lo] < pos[ip]) ++in_lo;
+    if (in_hi < in_lo) in_hi = in_lo;
+    while (in_hi < neg.size() && neg[in_hi] == pos[ip]) ++in_hi;
+    u += in_lo + 0.5 * (in_hi - in_lo);
+  }
+  return (double)(u / ((double)pos.size() * (double)neg.size()));
+}
+
 struct RescoreWorker : public Worker {
   const RMatrix<double> X;     // N x p data (NA = missing)
   const RVector<double> y;     // target
   const RMatrix<int> sets;     // k x n_sets, 0-based column indices
+  const RVector<double> fixed_cut; // holdout scoring: each set's training cutoff (empty = search)
   const int n, k;
-  const bool na_rm, binary, search_phi;
+  const bool na_rm, binary, search_phi, fixed;
   RVector<double> r_out, cut_out, phi_out, youden_out, auc_out;
 
   RescoreWorker(const NumericMatrix& X, const NumericVector& y, const IntegerMatrix& sets,
-                bool na_rm, bool binary, bool search_phi,
+                const NumericVector& fixed_cut, bool na_rm, bool binary, bool search_phi,
                 NumericVector r_out, NumericVector cut_out, NumericVector phi_out,
                 NumericVector youden_out, NumericVector auc_out)
-    : X(X), y(y), sets(sets), n(X.nrow()), k(sets.nrow()), na_rm(na_rm), binary(binary),
-      search_phi(search_phi), r_out(r_out), cut_out(cut_out), phi_out(phi_out),
+    : X(X), y(y), sets(sets), fixed_cut(fixed_cut), n(X.nrow()), k(sets.nrow()), na_rm(na_rm), binary(binary),
+      search_phi(search_phi), fixed(fixed_cut.length() > 0), r_out(r_out), cut_out(cut_out), phi_out(phi_out),
       youden_out(youden_out), auc_out(auc_out) {}
 
   void operator()(std::size_t begin, std::size_t end) {
-    std::vector<double> sum(n), score(n), pos, neg, search;
+    std::vector<double> sum(n), score(n), pred(fixed ? n : 0), pos, neg, search;
     std::vector<int> cnt(n);
     std::vector<uint64_t> ra, rb; std::vector<uint32_t> rc;
     for (std::size_t s = begin; s < end; ++s) {
@@ -923,25 +954,33 @@ struct RescoreWorker : public Worker {
       for (int i = 0; i < n; ++i)
         score[i] = na_rm ? (cnt[i] > 0 ? (sum[i] / cnt[i]) * k : NA_REAL) : (cnt[i] == k ? sum[i] : NA_REAL);
 
-      // Pearson r over pairwise-complete rows, two-pass like cor()
-      long double sx = 0, sy = 0; int m = 0;
-      for (int i = 0; i < n; ++i) if (!std::isnan(score[i]) && !std::isnan(y[i])) { sx += score[i]; sy += y[i]; ++m; }
-      double r = NA_REAL;
-      if (m >= 2) {
-        const long double mx = sx / m, my = sy / m;
-        long double sxy = 0, sxx = 0, syy = 0;
-        for (int i = 0; i < n; ++i) if (!std::isnan(score[i]) && !std::isnan(y[i])) {
-          const long double dx = score[i] - mx, dy = y[i] - my;
-          sxy += dx * dy; sxx += dx * dx; syy += dy * dy;
-        }
-        if (sxx > 0 && syy > 0) {
-          const long double n1 = m - 1;
-          sxx /= n1; syy /= n1; sxy /= n1;
-          r = std::max(-1.0, std::min(1.0, (double)(sxy / (std::sqrt(sxx) * std::sqrt(syy)))));
-        }
-      }
-      r_out[s] = r;
+      r_out[s] = pairwise_pearson(score, y);
       if (!binary) continue;
+
+      if (fixed) {
+        // Holdout: predict 1 where score >= the TRAINING cutoff; binarised r
+        // is the predictions' correlation with the target (as cor() of the
+        // 0/1 predictions), Youden's J and AUC from the holdout rows
+        const double cut = fixed_cut[s];
+        double tp = 0, fn = 0, tn = 0, fp = 0;
+        pos.clear(); neg.clear();
+        for (int i = 0; i < n; ++i) {
+          pred[i] = (std::isnan(score[i]) || std::isnan(cut)) ? NA_REAL : (score[i] >= cut ? 1.0 : 0.0);
+          if (std::isnan(score[i]) || std::isnan(y[i])) continue;
+          if (y[i] == 1) pos.push_back(score[i]); else if (y[i] == 0) neg.push_back(score[i]);
+          if (std::isnan(pred[i])) continue;
+          if (y[i] == 1) { if (pred[i] == 1) ++tp; else ++fn; }
+          else if (y[i] == 0) { if (pred[i] == 1) ++fp; else ++tn; }
+        }
+        cut_out[s] = cut;
+        phi_out[s] = pairwise_pearson(pred, y);
+        youden_out[s] = (tp + fn == 0 || tn + fp == 0) ? NA_REAL : tp / (tp + fn) + tn / (tn + fp) - 1;
+        if (pos.empty() || neg.empty()) { auc_out[s] = NA_REAL; continue; }
+        radix_sort_doubles(pos, ra, rb, rc);
+        radix_sort_doubles(neg, ra, rb, rc);
+        auc_out[s] = auc_sorted(pos, neg);
+        continue;
+      }
 
       // Binary target: cutoff search on THIS combination's own integer grid
       // floor(min)..ceiling(max) (so no trivial out-of-range cutoff can win a
@@ -965,14 +1004,7 @@ struct RescoreWorker : public Worker {
       radix_sort_doubles(pos, ra, rb, rc);
       radix_sort_doubles(neg, ra, rb, rc);
 
-      long double u = 0;                        // sum over positives of (#neg below + half #neg tied)
-      for (size_t ip = 0, in_lo = 0, in_hi = 0; ip < pos.size(); ++ip) {
-        while (in_lo < neg.size() && neg[in_lo] < pos[ip]) ++in_lo;
-        if (in_hi < in_lo) in_hi = in_lo;
-        while (in_hi < neg.size() && neg[in_hi] == pos[ip]) ++in_hi;
-        u += in_lo + 0.5 * (in_hi - in_lo);
-      }
-      auc_out[s] = (double)(u / (n_pos * n_neg));
+      auc_out[s] = auc_sorted(pos, neg);
 
       const int n_cut = (int)(c_hi - c_lo) + 1;
       search.assign(n_cut, NA_REAL);
@@ -1004,10 +1036,12 @@ struct RescoreWorker : public Worker {
 
 // [[Rcpp::export]]
 List rescore_sets_cpp(NumericMatrix data, NumericVector target, IntegerMatrix sets,
-                      bool na_rm, bool binary, bool search_phi) {
+                      bool na_rm, bool binary, bool search_phi,
+                      NumericVector fixed_cutoffs = NumericVector(0)) {
   const int n_sets = sets.ncol();
+  if (fixed_cutoffs.length() > 0 && fixed_cutoffs.length() != n_sets) stop("fixed_cutoffs must have one cutoff per set.");
   NumericVector r(n_sets), cutoff(n_sets), binarised_r(n_sets), youden_j(n_sets), auc(n_sets);
-  RescoreWorker worker(data, target, sets, na_rm, binary, search_phi, r, cutoff, binarised_r, youden_j, auc);
+  RescoreWorker worker(data, target, sets, fixed_cutoffs, na_rm, binary, search_phi, r, cutoff, binarised_r, youden_j, auc);
   parallelFor(0, n_sets, worker, 1);
   return List::create(Named("r") = r, Named("cutoff") = cutoff, Named("binarised_r") = binarised_r,
                       Named("youden_j") = youden_j, Named("auc") = auc);
