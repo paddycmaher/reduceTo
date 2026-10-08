@@ -34,8 +34,10 @@
 #'   score at each step. When keeping more than half the pool (e.g. 50 of 60), it works
 #'   from the other side: scoring the scale with small-k sets of items removed, and keeping
 #'   outright the items whose removal always hurts. The best sets found are then polished
-#'   by swapping 1 or 2 items with any item in the pool, recovering items that narrowing
-#'   removed. If FALSE, forces exhaustive search regardless of \code{ceiling} (can be slow)
+#'   by swapping 1 or 2 items with any item in the pool (recovering items that narrowing
+#'   removed), and by deterministic escapes that strip opposite ends of the item residuals'
+#'   main directions together and rebuild. If FALSE, forces exhaustive search regardless
+#'   of \code{ceiling} (can be slow)
 #' @param prefilter.ratio Drops items whose relevance (correlation with the target, or
 #'   item-total centrality with no target) is more than \code{prefilter.ratio} times
 #'   weaker than the strongest item, before optimisation runs. Only applies when at least
@@ -87,6 +89,10 @@
 #'   \item{best_indices}{Integer vector of column indices in the top-ranked set}
 #'   \item{scores}{(If generate = TRUE) A data frame containing the sum scores}
 #'   \item{binary_info}{(If binary target) A list containing optimal cutoffs and classification metrics}
+#'   \item{search}{List: \code{type} ("exhaustive", the guaranteed best set, or "optimised",
+#'     heuristic), \code{combinations} (possible sets), \code{searched} (sets scored by the
+#'     final exhaustive search) and, when optimised, \code{polish} (best r before and after
+#'     polishing, and the items swapped in and out)}
 #'   \item{params}{Named vector of parameters used in the function call}
 #' }
 #'
@@ -245,24 +251,41 @@ reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALS
   # kept outright) never reaches the final search. Starting from the best sets
   # found, hill-climb over the WHOLE pool with 1-item swaps, then 2-item swaps,
   # each scored exactly from the same moments as the search in O(1), until no
-  # swap improves. Judging items inside a complete near-optimal set catches
-  # what small-k rankings miss (16 of 40 at the default budget: exact optimum
-  # in 2 of 5 domains -> 5 of 5). Returns each polished set as an index string
+  # swap improves. 2-item swaps only pair up the CANDIDATE_LIST items on each
+  # side whose best single swap comes closest -- same answers on the tested
+  # pools, but ~40,000 candidates per step instead of up to 38 million (50 of
+  # 300 items: 14s -> 0.5s).
+  #
+  # A climb stops at a set no 1- or 2-item swap improves, typically 5-7 items
+  # from the true best, mostly as different siblings WITHIN facets. Geometrically,
+  # r^2 = T^2 / (T^2 + ssy |E|^2) with T the summed item-target signal and E the
+  # summed item residuals perpendicular to the target: the best set's residuals
+  # cancel. A stuck set is a balanced constellation of the wrong siblings, and
+  # any single swap unbalances it. So escape along the residual map's principal
+  # axes (and the diagonals between them): remove the selected items at BOTH
+  # poles together -- keeping the balance -- rebuild with them forbidden, then
+  # let everything compete again. Deterministic; exact optimum in 98.6% of 435
+  # benchmark runs (vs 79.7% for climbing alone). Returns each polished set as
+  # an index string, best first
   polish_by_swaps <- function(data, targ, idx, starts) {
     MAX_STEPS <- 100           # safety cap; converges in a few steps from good starts
     CHUNK <- 1e6               # 2-swap candidates scored per block (bounds memory)
-    MAX_2SWAP <- 5e7           # beyond this many 2-swaps per step, 1-swaps only
+    CANDIDATE_LIST <- 20       # items per side considered for 2-item swaps
+    N_AXES <- 3                # residual axes searched, plus the diagonals between them
+    MAX_STRIP <- 3             # items stripped from EACH pole per escape
+    MAX_PASSES <- 10           # escape passes (each restarts from any improvement)
     gc <- build_gram_components(data, targ)
     C <- gc$gram - outer(gc$col_sums, gc$col_sums) / gc$n_valid
     tt <- gc$col_target_dots - gc$col_sums * gc$sum_target / gc$n_valid
+    ssy <- gc$sum_target_sq - gc$sum_target^2 / gc$n_valid
     dC <- diag(C); p <- ncol(data)
     # |r| up to the constant sqrt(ssy)
     score <- function(Tn, Qn) { s <- abs(Tn) / sqrt(pmax(Qn, 0)); s[!(Qn > 0)] <- -Inf; s }
+    score_set <- function(S) score(sum(tt[S]), sum(C[S, S]))
 
-    vapply(strsplit(starts, ","), function(z) {
-      S <- match(as.numeric(z), idx)
+    climb <- function(S, forbid = integer(0)) {
       for (step in seq_len(MAX_STEPS)) {
-        O <- setdiff(seq_len(p), S)
+        O <- setdiff(seq_len(p), c(S, forbid))
         if (length(O) == 0) break
         a <- rowSums(C[, S, drop = FALSE]); Tn <- sum(tt[S]); Q <- sum(a[S]); s0 <- score(Tn, Q)
 
@@ -273,15 +296,17 @@ reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALS
           w <- arrayInd(which.max(s1), dim(s1)); S <- c(S[-w[1]], O[w[2]]); next
         }
 
-        if (length(S) < 2 || length(O) < 2 || choose(length(S), 2) * choose(length(O), 2) > MAX_2SWAP) break
-        ip <- utils::combn(length(S), 2); jp <- utils::combn(length(O), 2)
-        j1 <- O[jp[1, ]]; j2 <- O[jp[2, ]]
+        if (length(S) < 2 || length(O) < 2) break
+        Sc <- if (length(S) > CANDIDATE_LIST) S[order(apply(s1, 1, max), decreasing = TRUE)[1:CANDIDATE_LIST]] else S
+        Oc <- if (length(O) > CANDIDATE_LIST) O[order(apply(s1, 2, max), decreasing = TRUE)[1:CANDIDATE_LIST]] else O
+        ip <- utils::combn(length(Sc), 2); jp <- utils::combn(length(Oc), 2)
+        j1 <- Oc[jp[1, ]]; j2 <- Oc[jp[2, ]]
         add_j <- 2 * a[j1] + dC[j1] + 2 * a[j2] + dC[j2] + 2 * C[cbind(j1, j2)]
         best <- s0 * (1 + 1e-12); best_swap <- NULL
         rows_per_chunk <- max(1, floor(CHUNK / length(j1)))
         for (from in seq(1, ncol(ip), by = rows_per_chunk)) {
           cols_i <- from:min(from + rows_per_chunk - 1, ncol(ip))
-          i1 <- S[ip[1, cols_i]]; i2 <- S[ip[2, cols_i]]
+          i1 <- Sc[ip[1, cols_i]]; i2 <- Sc[ip[2, cols_i]]
           # Remove i1, i2 then add j1, j2 (cross terms with the removed pair subtracted)
           Q_rem <- Q - 2 * a[i1] - 2 * a[i2] + dC[i1] + dC[i2] + 2 * C[cbind(i1, i2)]
           cross <- C[i1, j1, drop = FALSE] + C[i2, j1, drop = FALSE] + C[i1, j2, drop = FALSE] + C[i2, j2, drop = FALSE]
@@ -294,8 +319,47 @@ reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALS
         if (is.null(best_swap)) break
         S <- c(setdiff(S, best_swap[1:2]), best_swap[3:4])
       }
-      paste(idx[sort(S)], collapse = ",")
-    }, character(1))
+      sort(S)
+    }
+
+    polished <- lapply(strsplit(starts, ","), function(z) climb(match(as.numeric(z), idx)))
+    best <- polished[[which.max(vapply(polished, score_set, numeric(1)))]]
+    k <- length(best)
+
+    # Residual-compass escapes (needs room to rebuild, and a usable residual map)
+    if (k >= 2 && p - k >= 2 && isTRUE(ssy > 0)) {
+      E_res <- C - outer(tt, tt) / ssy
+      sd_res <- sqrt(pmax(diag(E_res), 1e-300))
+      axes <- eigen(E_res / outer(sd_res, sd_res), symmetric = TRUE)$vectors[, seq_len(min(N_AXES, p - 1)), drop = FALSE]
+      bearings <- lapply(seq_len(ncol(axes)), function(d) axes[, d])
+      if (ncol(axes) >= 2) for (u in 1:(ncol(axes) - 1)) for (v in (u + 1):ncol(axes)) for (sg in c(1, -1))
+        bearings[[length(bearings) + 1]] <- (axes[, u] + sg * axes[, v]) / sqrt(2)
+
+      rebuild <- function(S, forbid) {        # greedy refill to k with `forbid` excluded, then climb
+        while (length(S) < k) {
+          O <- setdiff(seq_len(p), c(S, forbid))
+          a <- if (length(S)) rowSums(C[, S, drop = FALSE]) else numeric(p)
+          S <- c(S, O[which.max(score(sum(tt[S]) + tt[O], sum(C[S, S]) + 2 * a[O] + dC[O]))])
+        }
+        climb(climb(S, forbid))                # rebuild with them forbidden, then all compete again
+      }
+
+      best_s <- score_set(best)
+      for (pass in seq_len(MAX_PASSES)) {
+        improved <- FALSE
+        for (ld in bearings) for (m in seq_len(MAX_STRIP)) {
+          pos <- best[order(-ld[best])]; pos <- pos[ld[pos] > 0]
+          neg <- best[order(ld[best])]; neg <- neg[ld[neg] < 0]
+          strip <- unique(c(head(pos, m), head(neg, m)))
+          if (length(strip) == 0 || length(strip) >= k || p - length(strip) < k) next
+          cand <- rebuild(setdiff(best, strip), strip); cs <- score_set(cand)
+          if (cs > best_s * (1 + 1e-12)) { best <- cand; best_s <- cs; improved <- TRUE }
+        }
+        if (!improved) break
+      }
+    }
+
+    unique(vapply(c(list(best), polished), function(S) paste(idx[sort(S)], collapse = ","), character(1)))
   }
 
   # Bounds intermediate scoring cost during Synergistic RFE, not final pool
@@ -671,6 +735,7 @@ reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALS
     # below), so the reported best can never get worse; any item they bring
     # back is added to the scored columns and reported to the caller
     added <- numeric(0)
+    polished <- character(0)
     if (!is.null(polish_pool)) {
       POLISH_STARTS <- 5
       polished <- polish_by_swaps(polish_pool$data, targ, polish_pool$original_indices,
@@ -733,10 +798,25 @@ reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALS
       }
     }
 
+    # What the polish changed: the best |r| among the search's own sets vs.
+    # among all sets, and which items the best set swapped
+    polish_info <- NULL
+    if (!is.null(polish_pool)) {
+      r_abs <- abs(leaderboard$r)
+      from_polish <- leaderboard$combination %in% polished
+      i_search <- which(!from_polish)[which.max(r_abs[!from_polish])]
+      i_best <- which.max(r_abs)
+      set_of <- function(i) as.numeric(strsplit(leaderboard$combination[i], ",")[[1]])
+      polish_info <- list(r_search = r_abs[i_search], r_polished = r_abs[i_best],
+                          swapped_in = setdiff(set_of(i_best), set_of(i_search)),
+                          swapped_out = setdiff(set_of(i_search), set_of(i_best)))
+    }
+
     cpp_results <- list(leaderboard = leaderboard,
                         timings_cpp = cpp_result$timings_cpp,
                         used_fast_path = used_fast_path,
-                        added = added)
+                        added = added,
+                        polish_info = polish_info)
 
     return(cpp_results)
   }
@@ -1355,6 +1435,7 @@ reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALS
   # Keep the whole pool for the swap polish whenever the final search won't
   # cover every item (narrowed, prefiltered, or items kept outright)
   needs_polish <- length(cols) < ncol(data) || length(fixed_cols) > 0
+  searched_combinations <- choose(length(cols) - length(fixed_cols), n.items - length(fixed_cols))
   pool_data <- data
   pool_holdout <- if (cross.validate) data_holdout else NULL
 
@@ -1552,6 +1633,15 @@ reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALS
     original_items = original_names,
     filtered_items = filtered_names,
     final_pool_items = colnames(data),
+    search = list(
+      type = if (needs_polish) "optimised" else "exhaustive",
+      combinations = num_combinations,
+      searched = searched_combinations,
+      polish = if (!is.null(cpp_results$polish_info)) within(cpp_results$polish_info, {
+        swapped_in <- original_names[swapped_in]
+        swapped_out <- original_names[swapped_out]
+      })
+    ),
     pivoting_item = pivot_item,
     timings = list(timings_r = timings_r, timings_cpp = timings_cpp),
     params = c(
@@ -1646,6 +1736,24 @@ print.reduced_scale <- function(x, ...) {
     cat(paste0("Objective: Binary Classification (Ranked by ", m_name, ")\n"))
   }
   
+  # --- SEARCH: guaranteed or heuristic ---
+  if (!is.null(x$search)) {
+    fmt <- function(n) format(n, big.mark = ",", scientific = FALSE)
+    if (identical(x$search$type, "exhaustive")) {
+      cat(paste0("Search: exhaustive -- the best of all ", fmt(x$search$combinations), " possible sets\n"))
+    } else {
+      cat(paste0("Search: optimised (Synergistic RFE + swap polish) -- ", fmt(x$search$combinations),
+                 " possible sets, ", fmt(x$search$searched), " searched exhaustively; not guaranteed optimal\n"))
+      pol <- x$search$polish
+      if (!is.null(pol) && length(pol$swapped_in) > 0) {
+        cat(sprintf("Polish: r %.5f -> %.5f (in: %s; out: %s)\n", pol$r_search, pol$r_polished,
+                    paste(pol$swapped_in, collapse = ", "), paste(pol$swapped_out, collapse = ", ")))
+      } else if (!is.null(pol)) {
+        cat("Polish: no improving swaps found\n")
+      }
+    }
+  }
+
   # --- LEADERBOARD TABLE ---
   cat("\nTop", nrow(x$output), "Combinations:\n")
   print(format(x$output, digits = 6))

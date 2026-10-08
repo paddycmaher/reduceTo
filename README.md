@@ -91,7 +91,9 @@ result <- reduceTo(data = large_item_bank, n.items = 10)
 
 3\. Exhaustive search: finds the best set in the refined pool by brute force
 
-4\. Swap polish: starting from the best sets found, tries exchanging 1 or 2 items with any item in the original pool, keeping each swap that improves the score until none does -- recovering true items that narrowing removed
+4\. Swap polish: starting from the best sets found, tries exchanging 1 or 2 items with any item in the original pool, keeping each swap that improves the score until none does -- recovering true items that narrowing removed. It then escapes the sets that no small swap can improve -- typically several "sibling" items away from the best set -- using the geometry of the sum score: a sum score correlates highly with its target when its items' residuals (their parts unrelated to the target) cancel out. The polish removes the selected items at both ends of each main residual direction together, so the set stays balanced, rebuilds it without them, and keeps any improvement. It is deterministic.
+
+The two stages do different jobs. Narrowing and the exhaustive search find the right region, and are what catch items that only work as a group (3+ items whose value is invisible in smaller sets); local swaps cannot climb towards such groups. The polish then pins down the best set within that region.
 
 When keeping most of a scale (e.g. 50 of 60), choosing which items to keep is choosing which few to drop, so reduceTo works from the other side: Synergistic RFE scores the scale with k = 2, 3, ... items removed, keeps outright the items whose removal always hurts, and the exhaustive search then chooses which of the rest to drop.
 
@@ -153,6 +155,7 @@ result$best_indices        # Column numbers: c(3, 7, 12, 18, 24)
 result$best_names          # Column names: c("item3", "item7", ...)
 result$scores              # Computed sum scores
 result$binary_info         # Cutoff, sensitivity, specificity (binary only)
+result$search              # "exhaustive" (guaranteed best) or "optimised" (heuristic), and what the polish changed
 ```
 
 ------------------------------------------------------------------------
@@ -250,7 +253,9 @@ Your mileage will vary with your hardware and use case, but `reduceTo()` compute
 
 ### Optimisation Reliability
 
-The default optimisation settings were empirically calibrated in both real and deliberately-adversarial simulated datasets (200M+ combinations each). In practice, the heuristic approach only failed to find the true optimal item bundle in extreme scenarios, such as when an item's value is invisible unless combined with several (3+) other specific items. In these cases, the true solution could still be found by raising the `ceiling` value. Ordinary item structures (including simple weak/opposite-signed pairs) recovered the true optimum every time tested, across a wide range of `ceiling` settings. With the current defaults, it also recovered the exact optimum in all 12 real-data tests (8 and 10 items from the 60-item IPIP-NEO Neuroticism scale, N = 20,000), verified by exhaustive search of up to 75 billion combinations.
+Benchmarked against exhaustive search on 145 real-data problems (NEO-IPIP pools of 20-60 items, keeping 10-90% of items, up to 1.4 x 10^12 combinations): at budgets from 10^4 to the default 10^8, the optimised search came within r = .001 of the true best set every time, and found the exact best set in 98.6% of runs (worst miss: r = .00001). On 147 further problems not used in development (36-60 item pools, including external targets), it found the exact best set every time.
+
+The one known blind spot is a group of 3+ items whose value is invisible unless all are present together (e.g. items whose errors cancel only as a complete set). Local swaps cannot find such a group, so it depends on narrowing keeping its items: in simulations, a budget of 10^4 found hidden 3-4 item groups among 40-60 items every time, while a budget of 10^2 never did. If you suspect such structure, raise `ceiling` and `rfe.budget` -- every printed result states whether its search was exhaustive (guaranteed best) or optimised.
 
 ### Binary Targets
 

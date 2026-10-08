@@ -107,3 +107,36 @@ test_that("items brought back by the polish work through missing data, cross-val
     expect_false(is.na(r$output$r_holdout[1]))
   }
 })
+
+test_that("narrowing finds a hidden synergy group that local swaps cannot", {
+  # 4 items that predict the target perfectly together (their noise cancels in
+  # a cycle) but are individually weak, among real decoys and pure noise. The
+  # swap polish can't climb towards such a group -- partial groups are worse
+  # than decoys -- so finding it is narrowing's job
+  set.seed(11)
+  n <- 3000; target <- rnorm(n); g <- 4
+  noise <- lapply(1:g, function(i) { e <- resid(lm(rnorm(n) ~ target)); 4 * e / sd(e) })
+  synergy <- sapply(1:g, function(i) target + noise[[i]] - noise[[(i %% g) + 1]])
+  decoys <- sapply(1:17, function(i) 0.35 * target + sqrt(1 - 0.35^2) * rnorm(n))
+  data <- as.data.frame(cbind(synergy, decoys, matrix(rnorm(n * 39), n)))
+  names(data) <- c(paste0("S", 1:g), paste0("D", 1:17), paste0("X", 1:39))
+
+  r <- reduceTo(data, n.items = g, target = target, ceiling = 1e4, rfe.budget = 1e4,
+                show.progress = FALSE, verbose = FALSE)
+  expect_identical(r$search$type, "optimised")
+  expect_setequal(r$best_names, paste0("S", 1:g))
+  expect_gt(r$r, 0.999999)
+})
+
+test_that("the result reports whether the search was exhaustive, and what the polish changed", {
+  data <- make_facet_data(1)
+  exh <- reduceTo(data[, 1:12], n.items = 4, show.progress = FALSE, verbose = FALSE)
+  opt <- reduceTo(data, n.items = 8, ceiling = 1000, rfe.budget = 1000, show.progress = FALSE, verbose = FALSE)
+
+  expect_identical(exh$search$type, "exhaustive")
+  expect_null(exh$search$polish)
+  expect_identical(opt$search$type, "optimised")
+  expect_equal(opt$search$polish$r_polished, opt$r)
+  expect_gte(opt$search$polish$r_polished, opt$search$polish$r_search)
+  expect_length(opt$search$polish$swapped_in, length(opt$search$polish$swapped_out))
+})

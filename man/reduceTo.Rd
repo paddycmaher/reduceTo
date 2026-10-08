@@ -57,8 +57,10 @@ and progressively narrowing the item pool, keeping the items with the best achie
 score at each step. When keeping more than half the pool (e.g. 50 of 60), it works
 from the other side: scoring the scale with small-k sets of items removed, and keeping
 outright the items whose removal always hurts. The best sets found are then polished
-by swapping 1 or 2 items with any item in the pool, recovering items that narrowing
-removed. If FALSE, forces exhaustive search regardless of \code{ceiling} (can be slow)}
+by swapping 1 or 2 items with any item in the pool (recovering items that narrowing
+removed), and by deterministic escapes that strip opposite ends of the item residuals'
+main directions together and rebuild. If FALSE, forces exhaustive search regardless
+of \code{ceiling} (can be slow)}
 
 \item{prefilter.ratio}{Drops items whose relevance (correlation with the target, or
 item-total centrality with no target) is more than \code{prefilter.ratio} times
@@ -120,6 +122,10 @@ A list of class \code{reduced_scale} containing:
 \item{best_indices}{Integer vector of column indices in the top-ranked set}
 \item{scores}{(If generate = TRUE) A data frame containing the sum scores}
 \item{binary_info}{(If binary target) A list containing optimal cutoffs and classification metrics}
+\item{search}{List: \code{type} ("exhaustive", the guaranteed best set, or "optimised",
+heuristic), \code{combinations} (possible sets), \code{searched} (sets scored by the
+final exhaustive search) and, when optimised, \code{polish} (best r before and after
+polishing, and the items swapped in and out)}
 \item{params}{Named vector of parameters used in the function call}
 }
 }
