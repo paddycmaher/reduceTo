@@ -8,6 +8,8 @@
 #include <chrono>
 #include <iomanip>
 #include <thread>
+#include <cstring>
+#include <cstdint>
 
 using namespace Rcpp;
 using namespace RcppParallel;
@@ -849,4 +851,164 @@ List process_all_combinations_cpp_gram(
     Named("item_best") = item_best,
     Named("timings_cpp") = timings
   );
+}
+
+// ============================================================================
+// EXACT RE-SCORING OF THE TOP COMBINATIONS
+// ============================================================================
+// Both search engines work on approximated data (mean-imputed / 8-bit), so
+// the top combinations are re-scored exactly from the true data. One thread
+// per combination builds its sum scores straight from the data -- never the
+// N x keep_top score matrices the R version built (~7 GB at N = 300,000 with
+// a binary target's 1,000 sets) -- then its pairwise-complete r and, for
+// binary targets, the cutoff search and AUC (previously a single-core R loop
+// that dominated large-N runs).
+
+// Sorts doubles (no NaN) via up to 4 passes of 16-bit LSD radix on an
+// order-preserving integer mapping: O(N) where std::sort is O(N log N).
+// Passes where every key shares the digit are skipped -- integer-valued
+// sum scores have all-zero low mantissa bits, so they usually need one
+static void radix_sort_doubles(std::vector<double>& v, std::vector<uint64_t>& a,
+                               std::vector<uint64_t>& b, std::vector<uint32_t>& count) {
+  const size_t n = v.size();
+  a.resize(n); b.resize(n); count.resize(65536);
+  const uint64_t SIGN = (uint64_t)1 << 63;
+  for (size_t i = 0; i < n; ++i) {
+    uint64_t u; std::memcpy(&u, &v[i], sizeof(u));
+    a[i] = (u & SIGN) ? ~u : (u | SIGN);
+  }
+  for (int shift = 0; shift < 64; shift += 16) {
+    std::fill(count.begin(), count.end(), 0);
+    for (size_t i = 0; i < n; ++i) ++count[(a[i] >> shift) & 0xFFFF];
+    if (n == 0 || count[(a[0] >> shift) & 0xFFFF] == n) continue;  // all keys share this digit
+    uint32_t sum = 0;
+    for (int d = 0; d < 65536; ++d) { uint32_t c = count[d]; count[d] = sum; sum += c; }
+    for (size_t i = 0; i < n; ++i) b[count[(a[i] >> shift) & 0xFFFF]++] = a[i];
+    a.swap(b);
+  }
+  for (size_t i = 0; i < n; ++i) {
+    uint64_t u = (a[i] & SIGN) ? (a[i] & ~SIGN) : ~a[i];
+    std::memcpy(&v[i], &u, sizeof(u));
+  }
+}
+
+struct RescoreWorker : public Worker {
+  const RMatrix<double> X;     // N x p data (NA = missing)
+  const RVector<double> y;     // target
+  const RMatrix<int> sets;     // k x n_sets, 0-based column indices
+  const int n, k;
+  const bool na_rm, binary, search_phi;
+  RVector<double> r_out, cut_out, phi_out, youden_out, auc_out;
+
+  RescoreWorker(const NumericMatrix& X, const NumericVector& y, const IntegerMatrix& sets,
+                bool na_rm, bool binary, bool search_phi,
+                NumericVector r_out, NumericVector cut_out, NumericVector phi_out,
+                NumericVector youden_out, NumericVector auc_out)
+    : X(X), y(y), sets(sets), n(X.nrow()), k(sets.nrow()), na_rm(na_rm), binary(binary),
+      search_phi(search_phi), r_out(r_out), cut_out(cut_out), phi_out(phi_out),
+      youden_out(youden_out), auc_out(auc_out) {}
+
+  void operator()(std::size_t begin, std::size_t end) {
+    std::vector<double> sum(n), score(n), pos, neg, search;
+    std::vector<int> cnt(n);
+    std::vector<uint64_t> ra, rb; std::vector<uint32_t> rc;
+    for (std::size_t s = begin; s < end; ++s) {
+      // Sum scores: rowMeans(na.rm = TRUE) * k pro-rates over the items
+      // present (NA if none); na.rm = FALSE needs every item present
+      std::fill(sum.begin(), sum.end(), 0.0); std::fill(cnt.begin(), cnt.end(), 0);
+      for (int d = 0; d < k; ++d) {
+        const int j = sets(d, s);
+        for (int i = 0; i < n; ++i) { const double v = X(i, j); if (!std::isnan(v)) { sum[i] += v; ++cnt[i]; } }
+      }
+      for (int i = 0; i < n; ++i)
+        score[i] = na_rm ? (cnt[i] > 0 ? (sum[i] / cnt[i]) * k : NA_REAL) : (cnt[i] == k ? sum[i] : NA_REAL);
+
+      // Pearson r over pairwise-complete rows, two-pass like cor()
+      long double sx = 0, sy = 0; int m = 0;
+      for (int i = 0; i < n; ++i) if (!std::isnan(score[i]) && !std::isnan(y[i])) { sx += score[i]; sy += y[i]; ++m; }
+      double r = NA_REAL;
+      if (m >= 2) {
+        const long double mx = sx / m, my = sy / m;
+        long double sxy = 0, sxx = 0, syy = 0;
+        for (int i = 0; i < n; ++i) if (!std::isnan(score[i]) && !std::isnan(y[i])) {
+          const long double dx = score[i] - mx, dy = y[i] - my;
+          sxy += dx * dy; sxx += dx * dx; syy += dy * dy;
+        }
+        if (sxx > 0 && syy > 0) {
+          const long double n1 = m - 1;
+          sxx /= n1; syy /= n1; sxy /= n1;
+          r = std::max(-1.0, std::min(1.0, (double)(sxy / (std::sqrt(sxx) * std::sqrt(syy)))));
+        }
+      }
+      r_out[s] = r;
+      if (!binary) continue;
+
+      // Binary target: cutoff search on THIS combination's own integer grid
+      // floor(min)..ceiling(max) (so no trivial out-of-range cutoff can win a
+      // tie; score >= cutoff predicts 1), Youden's J / phi per cutoff, and
+      // AUC (Mann-Whitney U, ties counted half). Equal Youden's J / |phi| at
+      // different cutoffs is common, so near-ties (within 1e-9) count as ties
+      // and the smallest cutoff wins -- deterministic across computation paths
+      pos.clear(); neg.clear();
+      double lo = R_PosInf, hi = R_NegInf;
+      for (int i = 0; i < n; ++i) {
+        if (std::isnan(score[i]) || std::isnan(y[i])) continue;
+        lo = std::min(lo, score[i]); hi = std::max(hi, score[i]);
+        if (y[i] == 1) pos.push_back(score[i]); else if (y[i] == 0) neg.push_back(score[i]);
+      }
+      cut_out[s] = phi_out[s] = youden_out[s] = auc_out[s] = NA_REAL;
+      if (!(lo <= hi)) continue;
+      const double c_lo = std::floor(lo), c_hi = std::ceil(hi);
+      const double n_pos = (double)pos.size(), n_neg = (double)neg.size();
+      if (n_pos == 0 || n_neg == 0) { cut_out[s] = (c_lo + c_hi) / 2; phi_out[s] = 0; continue; }
+
+      radix_sort_doubles(pos, ra, rb, rc);
+      radix_sort_doubles(neg, ra, rb, rc);
+
+      long double u = 0;                        // sum over positives of (#neg below + half #neg tied)
+      for (size_t ip = 0, in_lo = 0, in_hi = 0; ip < pos.size(); ++ip) {
+        while (in_lo < neg.size() && neg[in_lo] < pos[ip]) ++in_lo;
+        if (in_hi < in_lo) in_hi = in_lo;
+        while (in_hi < neg.size() && neg[in_hi] == pos[ip]) ++in_hi;
+        u += in_lo + 0.5 * (in_hi - in_lo);
+      }
+      auc_out[s] = (double)(u / (n_pos * n_neg));
+
+      const int n_cut = (int)(c_hi - c_lo) + 1;
+      search.assign(n_cut, NA_REAL);
+      std::vector<double> youden_c(n_cut), phi_c(n_cut);
+      double best = R_NegInf;
+      for (int c = 0, ip = 0, in = 0; c < n_cut; ++c) {
+        const double cut = c_lo + c;
+        while (ip < (int)pos.size() && pos[ip] < cut) ++ip;
+        while (in < (int)neg.size() && neg[in] < cut) ++in;
+        const double tp = n_pos - ip, fp = n_neg - in, tn = n_neg - fp, fn = n_pos - tp;
+        youden_c[c] = tp / n_pos + tn / n_neg - 1;
+        const double denom = std::sqrt((tp + fp) * (tp + fn) * (tn + fp) * (tn + fn));
+        phi_c[c] = denom == 0 ? NA_REAL : (tp * tn - fp * fn) / denom;
+        search[c] = search_phi ? std::fabs(phi_c[c]) : youden_c[c];
+        if (!std::isnan(search[c]) && search[c] > best) best = search[c];
+      }
+      phi_out[s] = 0;                           // (as in R when no cutoff has a defined phi)
+      for (int c = 0; c < n_cut; ++c) {        // first cutoff within 1e-9 of the best
+        if (!std::isnan(search[c]) && search[c] >= best - 1e-9) {
+          cut_out[s] = c_lo + c;
+          phi_out[s] = std::isnan(phi_c[c]) ? 0 : phi_c[c];
+          youden_out[s] = youden_c[c];
+          break;
+        }
+      }
+    }
+  }
+};
+
+// [[Rcpp::export]]
+List rescore_sets_cpp(NumericMatrix data, NumericVector target, IntegerMatrix sets,
+                      bool na_rm, bool binary, bool search_phi) {
+  const int n_sets = sets.ncol();
+  NumericVector r(n_sets), cutoff(n_sets), binarised_r(n_sets), youden_j(n_sets), auc(n_sets);
+  RescoreWorker worker(data, target, sets, na_rm, binary, search_phi, r, cutoff, binarised_r, youden_j, auc);
+  parallelFor(0, n_sets, worker, 1);
+  return List::create(Named("r") = r, Named("cutoff") = cutoff, Named("binarised_r") = binarised_r,
+                      Named("youden_j") = youden_j, Named("auc") = auc);
 }

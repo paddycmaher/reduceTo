@@ -9,3 +9,7 @@ process_all_combinations_cpp_gram <- function(gram, col_sums, col_target_dots, s
     .Call(`_reduceTo_process_all_combinations_cpp_gram`, gram, col_sums, col_target_dots, sum_target, sum_target_sq, n_valid, n_items, num_choose_from, original_indices, keep_top, show_progress)
 }
 
+rescore_sets_cpp <- function(data, target, sets, na_rm, binary, search_phi) {
+    .Call(`_reduceTo_rescore_sets_cpp`, data, target, sets, na_rm, binary, search_phi)
+}
+

@@ -205,98 +205,10 @@ reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALS
     cv / outer(sds, sds)
   }
 
-  # Cutoff search + AUC for binary targets, sharing ONE grouping pass.
-  #
-  # The previous version vectorized the cutoff search across all N rows via
-  # outer(pos_scores, possible_integers, ">="), and separately grouped AUC
-  # by exact unique score value. Both were still fundamentally O(N x cutoffs)
-  # and O(N) respectively per combination. But item-sum scores repeat
-  # heavily -- even under realistic na.rm = TRUE missingness, only ~100-300
-  # distinct values typically occur out of thousands of rows (stress-tested
-  # across n.items 6-15 and missingness rates 15-60%) -- so grouping FIRST
-  # (one hash-based O(N) pass via unique()+match()+tabulate()) and running
-  # the cutoff search and AUC over that much smaller unique-value set (U,
-  # not N) does the same math on a far smaller array. Measured ~17x faster
-  # than the previous version on realistic pipeline-shaped data (N=20,000,
-  # 1000 combinations), verified exact via brute force across 2000 trials
-  # (integer, fractional/na.rm=TRUE, continuous, and heavily-tied scores).
-  #
-  # Cutoff search: uses outer(uniq, possible_integers, ">=") -- a U x
-  # cutoffs matrix instead of N x cutoffs -- then two matrix multiplies
-  # (per-unique-value counts against the mask) give tp(c)/fp(c) for every
-  # candidate cutoff at once. possible_integers is still THIS combination's
-  # own observed range (not a shared grid), so there's no risk of a trivial
-  # out-of-range cutoff winning a tie -- same guarantee the earlier
-  # per-combination version had.
-  #
-  # AUC: the Mann-Whitney U identity from the previous version, reusing the
-  # same P/Q unique-value counts instead of recomputing them separately:
-  #   AUC * n_pos * n_neg = sum_v P[v] * (CumQ[v] + 0.5 * Q[v])
-  #
-  # Tie-breaking: different cutoffs achieving mathematically-equal
-  # |correlation| or Youden's J is common, not a rare edge case. An exact
-  # which.max() comparison lets tiny floating-point differences between
-  # computation paths pick different winners among genuinely tied
-  # candidates -- treating near-ties (within 1e-9) as ties and
-  # deterministically keeping the smallest cutoff avoids that fragility.
-  compute_binary_metrics <- function(scores, binary_target, optimize_for = "youden_j") {
-    valid_idx <- !is.na(scores) & !is.na(binary_target)
-    scores_clean <- scores[valid_idx]
-    target_clean <- binary_target[valid_idx]
-
-    # as.double(): sum() of a logical vector returns integer, and n_pos *
-    # n_neg below silently overflows R's 32-bit integer range (NA, with a
-    # warning) once both counts exceed ~46,000 -- well within reach for
-    # real datasets with tens/hundreds of thousands of rows.
-    n_pos <- as.double(sum(target_clean == 1))
-    n_neg <- as.double(sum(target_clean == 0))
-    possible_integers <- floor(range(scores_clean)[1]):ceiling(range(scores_clean)[2])
-
-    if (n_pos == 0 || n_neg == 0) {
-      return(list(optimal_integer_cutoff = median(possible_integers),
-                  binarised_r = 0, youden_j = NA, auc = NA))
-    }
-
-    uniq <- sort(unique(scores_clean))
-    bin_idx <- match(scores_clean, uniq)
-    P <- tabulate(bin_idx[target_clean == 1], nbins = length(uniq))
-    Q <- tabulate(bin_idx[target_clean == 0], nbins = length(uniq))
-
-    cum_neg_before <- cumsum(Q) - Q
-    auc <- sum(P * (cum_neg_before + 0.5 * Q)) / (n_pos * n_neg)
-
-    above_mask <- outer(uniq, possible_integers, `>=`)
-    tp_c <- as.vector(P %*% above_mask)
-    fp_c <- as.vector(Q %*% above_mask)
-    tn_c <- n_neg - fp_c
-    fn_c <- n_pos - tp_c
-
-    youden_c <- tp_c / n_pos + tn_c / n_neg - 1
-
-    phi_num <- tp_c * tn_c - fp_c * fn_c
-    phi_denom <- sqrt((tp_c + fp_c) * (tp_c + fn_c) * (tn_c + fp_c) * (tn_c + fn_c))
-    phi_c <- ifelse(phi_denom == 0, NA, phi_num / phi_denom)
-
-    search_vec <- if (optimize_for == "binarised_r") abs(phi_c) else youden_c
-    best_idx <- which(search_vec >= max(search_vec, na.rm = TRUE) - 1e-9)[1]
-
-    list(
-      optimal_integer_cutoff = possible_integers[best_idx],
-      binarised_r = if (is.na(phi_c[best_idx])) 0 else phi_c[best_idx],
-      youden_j = youden_c[best_idx],
-      auc = auc
-    )
-  }
-
-  # Standalone AUC (same grouped Mann-Whitney U as inside
-  # compute_binary_metrics above) for contexts that only need AUC, not a
-  # cutoff search -- e.g. holdout scoring, where the cutoff was already
-  # fixed from the training set and re-searching it would be both wrong and
-  # wasted work. Kept separate (small duplication of the grouping math)
-  # rather than sharing compute_binary_metrics, since that function's whole
-  # point is fusing the search and AUC into one grouping pass for the
-  # training-set path -- calling out to a shared helper here would either
-  # lose that fusion or force this simpler caller through an unneeded search.
+  # Standalone AUC (same Mann-Whitney U, ties counted half, as the training
+  # set's exact re-scoring in rescore_sets_cpp) for holdout scoring, where
+  # the cutoff was already fixed from the training set and re-searching it
+  # would be both wrong and wasted work.
   compute_auc <- function(scores, binary_target) {
     valid <- !is.na(scores) & !is.na(binary_target)
     s <- scores[valid]
@@ -799,81 +711,34 @@ reduceTo <- function(data, n.items, target = NULL, n.sets = 5, item.names = FALS
     }
 
     # Recompute exact statistics for the top `keep_top` combinations from the
-    # true data (both scoring engines above work from approximated data).
-    # Vectorized: rather than looping rowMeans()/cor() once per combination
-    # (each paying its own R-interpreter overhead), build one N x keep_top
-    # "membership matrix" (1 where an item is used by that combination) and
-    # get every combination's score in a single matrix multiply, then every
-    # combination's correlation in a single cor() call.
+    # true data (both scoring engines above work from approximated data), in
+    # parallel C++: each combination's sum scores are built straight from the
+    # data, then its pairwise-complete r -- and for binary targets its cutoff
+    # search and AUC. This used to build N x keep_top score matrices (~7 GB
+    # at N = 300,000 with a binary target) and loop the cutoff search in R on
+    # one core (21 of 27 seconds of that run)
     {
-      n_top <- nrow(leaderboard)
       top_combos <- strsplit(leaderboard$combination, ',')
-      local_cols_list <- lapply(top_combos, function(cids) match(as.numeric(cids), original_indices))
+      sets <- matrix(unlist(lapply(top_combos, function(cids) match(as.numeric(cids), original_indices))) - 1L,
+                     nrow = n.items)
+      storage.mode(sets) <- "integer"
 
-      membership <- matrix(0L, nrow = ncol(data), ncol = n_top)
-      membership[cbind(unlist(local_cols_list), rep(seq_len(n_top), each = n.items))] <- 1L
-
-      data_mat <- as.matrix(data)
-      mark_time("membership_matrix")
-
-      # Zeroed-NA sum and valid-item count per row per combination, both via
-      # matrix multiply. Plain data_mat %*% membership would be wrong here:
-      # in R, NA * 0 is NA, so any row with an NA ANYWHERE in the pool would
-      # contaminate every combination's sum, not just combinations that
-      # actually use that item -- zeroing NAs first avoids that.
-      valid_mat <- (!is.na(data_mat)) * 1
-      data_zeroed <- data_mat
-      data_zeroed[is.na(data_mat)] <- 0
-
-      sum_matrix <- data_zeroed %*% membership
-      count_matrix <- valid_mat %*% membership
-
-      if (na.rm) {
-        # Pro-rated mean of whichever items were valid for that row, scaled
-        # back up to n.items -- matches rowMeans(..., na.rm = TRUE) * n.items
-        scores_matrix <- (sum_matrix / count_matrix) * n.items
-      } else {
-        # Matches rowMeans(..., na.rm = FALSE) * n.items: NA unless every
-        # selected item was present for that row
-        scores_matrix <- sum_matrix
-        scores_matrix[count_matrix < n.items] <- NA
+      if (is_binary && show.progress) {
+        bc_width <- max(getOption("width", 80L) - 1L, 20L)
+        cat("\r", formatC("~{  binaryCutoff  }~ searching", width = -bc_width), sep = "")
+        flush.console()
       }
-      mark_time("vectorised_scoring")
+      rescored <- rescore_sets_cpp(as.matrix(data), as.numeric(targ), sets, na.rm, is_binary,
+                                   identical(optimize_for, "binarised_r"))
+      mark_time("exact_rescoring")
 
-      refined_r <- as.vector(suppressWarnings(cor(scores_matrix, targ, use = "pairwise.complete.obs")))
-      mark_time("vectorised_correlation")
-
-      leaderboard$r <- refined_r
+      leaderboard$r <- rescored$r
 
       if (is_binary) {
-        binarised_r <- numeric(n_top)
-        cutoff <- numeric(n_top)
-        youden_j <- numeric(n_top)
-        auc <- numeric(n_top)
-
-        # Per-combination cutoff search + AUC isn't linear algebra (each
-        # needs its own grouping over that combination's own score
-        # distribution), so this stays a loop -- but each iteration now
-        # groups by unique value (U, not N) instead of scanning all N rows,
-        # and computes cutoff search + AUC together from one shared grouping
-        if (show.progress) {
-          bc_width <- max(getOption("width", 80L) - 1L, 20L)
-          cat("\r", formatC("~{  binaryCutoff  }~ searching", width = -bc_width), sep = "")
-          flush.console()
-        }
-        for (i in seq_len(n_top)) {
-          m <- compute_binary_metrics(scores_matrix[, i], targ, optimize_for)
-          binarised_r[i] <- m$binarised_r
-          cutoff[i] <- m$optimal_integer_cutoff
-          youden_j[i] <- m$youden_j
-          auc[i] <- m$auc
-        }
-        mark_time("binary_metrics")
-
-        leaderboard$`>=` <- cutoff
-        leaderboard$binarised_r <- binarised_r
-        leaderboard$youden_j <- youden_j
-        leaderboard$auc <- auc
+        leaderboard$`>=` <- rescored$cutoff
+        leaderboard$binarised_r <- rescored$binarised_r
+        leaderboard$youden_j <- rescored$youden_j
+        leaderboard$auc <- rescored$auc
 
         # Re-rank by the chosen metric
         leaderboard <- leaderboard[order(abs(leaderboard[[ranking_metric]]),

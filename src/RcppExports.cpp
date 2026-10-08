@@ -49,10 +49,27 @@ BEGIN_RCPP
     return rcpp_result_gen;
 END_RCPP
 }
+// rescore_sets_cpp
+List rescore_sets_cpp(NumericMatrix data, NumericVector target, IntegerMatrix sets, bool na_rm, bool binary, bool search_phi);
+RcppExport SEXP _reduceTo_rescore_sets_cpp(SEXP dataSEXP, SEXP targetSEXP, SEXP setsSEXP, SEXP na_rmSEXP, SEXP binarySEXP, SEXP search_phiSEXP) {
+BEGIN_RCPP
+    Rcpp::RObject rcpp_result_gen;
+    Rcpp::RNGScope rcpp_rngScope_gen;
+    Rcpp::traits::input_parameter< NumericMatrix >::type data(dataSEXP);
+    Rcpp::traits::input_parameter< NumericVector >::type target(targetSEXP);
+    Rcpp::traits::input_parameter< IntegerMatrix >::type sets(setsSEXP);
+    Rcpp::traits::input_parameter< bool >::type na_rm(na_rmSEXP);
+    Rcpp::traits::input_parameter< bool >::type binary(binarySEXP);
+    Rcpp::traits::input_parameter< bool >::type search_phi(search_phiSEXP);
+    rcpp_result_gen = Rcpp::wrap(rescore_sets_cpp(data, target, sets, na_rm, binary, search_phi));
+    return rcpp_result_gen;
+END_RCPP
+}
 
 static const R_CallMethodDef CallEntries[] = {
     {"_reduceTo_process_all_combinations_cpp_parallel_float", (DL_FUNC) &_reduceTo_process_all_combinations_cpp_parallel_float, 8},
     {"_reduceTo_process_all_combinations_cpp_gram", (DL_FUNC) &_reduceTo_process_all_combinations_cpp_gram, 11},
+    {"_reduceTo_rescore_sets_cpp", (DL_FUNC) &_reduceTo_rescore_sets_cpp, 6},
     {NULL, NULL, 0}
 };
 
