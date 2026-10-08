@@ -545,8 +545,9 @@ struct GramDFSWorker : public Worker {
   const std::vector<double>& diagC; // C(j, j)
   const std::vector<double>& t;     // centered item-target cross-products
   const double ssy;                 // centered target sum of squares
-  const int p, k, D, K;
-  const std::vector<int>& tasks;    // flattened branch prefixes (length D each)
+  const int p, k, K;
+  const std::vector<int>& task_items; // branch prefixes, flattened (variable length)
+  const std::vector<int>& task_off;   // prefix of task i is task_items[task_off[i] .. task_off[i + 1])
 
   struct HeapEntry { double key; double r; int slot; };
   std::vector<HeapEntry> heap;      // min-heap: front() is the worst kept entry
@@ -559,13 +560,13 @@ struct GramDFSWorker : public Worker {
   std::vector<int> idx;
 
   GramDFSWorker(const std::vector<double>& C, const std::vector<double>& diagC,
-                const std::vector<double>& t, double ssy, int p, int k, int D, int K,
-                const std::vector<int>& tasks)
-    : C(C), diagC(diagC), t(t), ssy(ssy), p(p), k(k), D(D), K(K), tasks(tasks),
+                const std::vector<double>& t, double ssy, int p, int k, int K,
+                const std::vector<int>& task_items, const std::vector<int>& task_off)
+    : C(C), diagC(diagC), t(t), ssy(ssy), p(p), k(k), K(K), task_items(task_items), task_off(task_off),
       slots((size_t)K * k), item_best(p, -1.0) { heap.reserve(K); }
 
   GramDFSWorker(const GramDFSWorker& o, Split)
-    : C(o.C), diagC(o.diagC), t(o.t), ssy(o.ssy), p(o.p), k(o.k), D(o.D), K(o.K), tasks(o.tasks),
+    : C(o.C), diagC(o.diagC), t(o.t), ssy(o.ssy), p(o.p), k(o.k), K(o.K), task_items(o.task_items), task_off(o.task_off),
       slots((size_t)o.K * o.k), item_best(o.p, -1.0) { heap.reserve(o.K); }
 
   // true if (key_a, combo_a) should rank above (key_b, combo_b)
@@ -656,13 +657,16 @@ struct GramDFSWorker : public Worker {
     if (R.empty()) {
       R.assign((size_t)k * p, 0.0); T.assign(k + 1, 0.0); Q.assign(k + 1, 0.0); idx.assign(k, 0);
     }
-    std::vector<int> cur(D, -1);
+    std::vector<int> cur(k, -1);
+    int cur_len = 0;
     for (std::size_t task = begin; task < end; ++task) {
-      const int* pre = D > 0 ? &tasks[task * D] : nullptr;
+      const int* pre = task_items.data() + task_off[task];
+      const int len = task_off[task + 1] - task_off[task];
       int same = 0;                          // consecutive tasks share leading items -- reuse them
-      while (same < D && cur[same] == pre[same]) ++same;
-      for (int d = same; d < D; ++d) { idx[d] = pre[d]; cur[d] = pre[d]; push(d); }
-      walk(D, D > 0 ? pre[D - 1] + 1 : 0);
+      while (same < len && same < cur_len && cur[same] == pre[same]) ++same;
+      for (int d = same; d < len; ++d) { idx[d] = pre[d]; cur[d] = pre[d]; push(d); }
+      cur_len = len;
+      walk(len, len > 0 ? pre[len - 1] + 1 : 0);
     }
   }
 
@@ -672,13 +676,38 @@ struct GramDFSWorker : public Worker {
   }
 };
 
-static void gen_branch_prefixes(int p, int k, int D, int pos, int start,
-                                std::vector<int>& cur, std::vector<int>& out) {
-  if (pos == D) { out.insert(out.end(), cur.begin(), cur.end()); return; }
-  for (int i = start; i <= p - (k - pos); ++i) {
-    cur[pos] = i; gen_branch_prefixes(p, k, D, pos + 1, i + 1, cur, out);
+// Splits the combination tree into branches (a fixed prefix of leading
+// items plus everything below it) of at most `target` combinations, in
+// lexicographic order. Only branches still above target are split deeper, so
+// every shape -- e.g. 16 of 40, whose fixed-depth branches held up to 130M
+// combinations and left most threads idle -- gets evenly small pieces.
+// Resumable, so each batch generates only its own branches
+struct BranchGenerator {
+  const int p, k; const double target;
+  std::vector<int> cur, nxt;
+  int depth; bool done, root_pending;
+  BranchGenerator(int p, int k, double target)
+    : p(p), k(k), target(target), cur(k, 0), nxt(k + 1, 0), depth(0), done(false),
+      root_pending(k == 1 || calculate_combinations_double(p, k) <= target) {}
+  // Appends the next branch prefix to `items` and returns its size (0 = none left)
+  double next(std::vector<int>& items) {
+    if (done) return 0;
+    if (root_pending) { done = true; return calculate_combinations_double(p, k); }
+    while (depth >= 0) {
+      const int i = nxt[depth];
+      if (i > p - (k - depth)) { --depth; continue; }     // level exhausted: backtrack
+      cur[depth] = i; nxt[depth] = i + 1;
+      const double size = calculate_combinations_double(p - 1 - i, k - depth - 1);
+      if (size <= target || depth + 1 == k - 1) {
+        items.insert(items.end(), cur.begin(), cur.begin() + depth + 1);
+        return size;
+      }
+      ++depth; nxt[depth] = i + 1;                         // still too big: split deeper
+    }
+    done = true;
+    return 0;
   }
-}
+};
 
 // [[Rcpp::export]]
 List process_all_combinations_cpp_gram(
@@ -712,26 +741,17 @@ List process_all_combinations_cpp_gram(
   double ssy = sum_target_sq - sum_target * sum_target / n_valid;
   if (!(n_valid > 1 && ssy > 0)) ssy = NA_REAL;
 
-  // Split the tree into branches deep enough that no single branch holds
-  // more than a small share of the work (keeps every thread busy even when
-  // the first branch is by far the biggest, e.g. 15 of 26), and no more than
-  // ~5M combinations: each branch runs on one thread, so a bigger one leaves
-  // the other threads idle at the end of every ~TARGET_BATCH_MS batch
+  // Each branch runs on one thread, so keep every branch small: at most a
+  // small share of the whole search, and at most ~5M combinations (a bigger
+  // one leaves the other threads idle at the end of every ~TARGET_BATCH_MS
+  // batch). Every batch also holds several branches per thread
   int n_threads = std::max(1u, std::thread::hardware_concurrency());
-  int D = 0;
-  while (D < k - 1 && calculate_combinations_double(p - D, k - D) > std::min(n_combos_d / (8.0 * n_threads), 5e6) &&
-         calculate_combinations_double(p, D + 1) <= 5e6) ++D;
-  if (D == 0 && k > 1) D = 1;
-  std::vector<int> tasks, cur(D);
-  if (D > 0) gen_branch_prefixes(p, k, D, 0, 0, cur, tasks);
-  int n_tasks = D > 0 ? (int)(tasks.size() / D) : 1;
-
-  auto branch_size = [&](int task) {
-    return D > 0 ? calculate_combinations_double(p - 1 - tasks[(size_t)task * D + D - 1], k - D) : n_combos_d;
-  };
+  BranchGenerator gen(p, k, std::min(n_combos_d / (8.0 * n_threads), 5e6));
+  const int MIN_BRANCHES_PER_BATCH = 4 * n_threads;
+  std::vector<int> task_items, task_off;
 
   int n_top = (int)std::min((double)keep_top, n_combos_d);
-  GramDFSWorker master(C, diagC, t, ssy, p, k, D, n_top, tasks);
+  GramDFSWorker master(C, diagC, t, ssy, p, k, n_top, task_items, task_off);
 
   auto start_time = std::chrono::high_resolution_clock::now();
   // Work in batches of branches: lets the user interrupt, and drives the
@@ -740,16 +760,22 @@ List process_all_combinations_cpp_gram(
   double batch_target = 2e7;
   double last_print_ms = -MIN_UPDATE_INTERVAL_MS;
   double done = 0;
-  int b0 = 0;
-  while (b0 < n_tasks) {
-    int b1 = b0; double batch_combos = 0;
-    while (b1 < n_tasks && (batch_combos < batch_target || b1 == b0)) batch_combos += branch_size(b1++);
+  bool finished = false;
+  while (!finished) {
+    task_items.clear(); task_off.assign(1, 0);
+    double batch_combos = 0;
+    while (batch_combos < batch_target || (int)task_off.size() - 1 < MIN_BRANCHES_PER_BATCH) {
+      double size = gen.next(task_items);
+      if (size == 0) { finished = true; break; }
+      task_off.push_back((int)task_items.size());
+      batch_combos += size;
+    }
+    if (task_off.size() == 1) break;
 
-    GramDFSWorker worker(C, diagC, t, ssy, p, k, D, n_top, tasks);
-    parallelReduce(b0, b1, worker, 1);
+    GramDFSWorker worker(C, diagC, t, ssy, p, k, n_top, task_items, task_off);
+    parallelReduce(0, task_off.size() - 1, worker, 1);
     master.join(worker);
     done += batch_combos;
-    b0 = b1;
     Rcpp::checkUserInterrupt();
 
     auto now = std::chrono::high_resolution_clock::now();
@@ -757,7 +783,7 @@ List process_all_combinations_cpp_gram(
     batch_target = std::max(done / std::max(ms_since_start, 1.0) * TARGET_BATCH_MS, 1e5);
 
     if (show_progress) {
-      bool is_last_batch = (b0 == n_tasks);
+      bool is_last_batch = finished || done >= n_combos_d;
       if (ms_since_start - last_print_ms >= MIN_UPDATE_INTERVAL_MS || is_last_batch) {
         last_print_ms = ms_since_start;
         double seconds = std::max(ms_since_start, 1.0) / 1000.0;
