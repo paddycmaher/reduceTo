@@ -15,9 +15,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install gdb and valgrind
+      - name: Install gdb, valgrind and cmake (RcppParallel builds TBB with cmake)
         run: |
-          if command -v dnf >/dev/null; then dnf install -y gdb valgrind; else apt-get update && apt-get install -y gdb valgrind; fi
+          if command -v dnf >/dev/null; then dnf install -y gdb valgrind cmake; else apt-get update && apt-get install -y gdb valgrind cmake; fi
 
       - name: Install dependencies
         run: Rscript -e 'install.packages(c("Rcpp", "RcppParallel"), repos = "https://cloud.r-project.org")'
