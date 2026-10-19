@@ -6,7 +6,7 @@
 
 ## Overview
 
-`reduceTo()` exactly solves the combinatorial optimisation problem of selecting *`n`* items from a larger pool that maximise correlation with a target criterion. reduceTo can be used to shorten existing psychological scales, build diagnostic screeners, or derive scales from item banks based on an external criterion.
+`reduceTo()` solves the combinatorial optimisation problem of selecting the exact set of *`n`* items from a larger pool that maximises correlation with a target criterion. reduceTo can be used to shorten existing psychological scales, build diagnostic screeners, or derive scales from item banks based on an external criterion.
 
 ### Key Features
 
@@ -81,15 +81,15 @@ A scale's central axis, i.e. the average vector of all its items, is its 'centro
 
 The similarity of any two scales is determined by the cosine of the angle between their centroids: that is, their Pearson correlation, *r*. Whenever shortening a scale with the goal of preserving the parent scale's validity, maximising *r* is definitionally the optimal approach. Any other criterion risks distorting the psychological construct captured by the scale by more than is necessary, discarding signal and reorienting the centroid down a new axis.
 
-A short form might achieve a high correlation with its parent scale (*r*<sub>parent</sub>) because its items are all perfectly parallel to the parent's centroid, or (more commonly) because its items balance one other – like the legs of a chair, or the struts and walls in a house. This counterbalancing means that, rather than some items being statically 'good' or 'bad', certain item sets work well together, and others do not. Additionally, just as in stool design, it means that the best three-item solution does not necessarily share any features with the best four-item solution. Items need to be weighed in combination with one another, rather than on their individual merits.
+A short form might achieve a high correlation with its parent scale (*r*<sub>parent</sub>) because its items are all perfectly parallel to the parent's centroid, or (more commonly) because its items balance one other – like the legs of a chair, or the struts and walls in a house. This counterbalancing means that, rather than some items being statically 'good' or 'bad', certain item sets work well together, and others do not. Additionally, just as in stool design, it means that the best three-item solution does not necessarily share any features with the best four-item solution. Items need to be weighed dynamically, in combination with one another, rather than on their individual merits.
 
 ## The Algorithm
 
 ### Exhaustive Search
 
-Because maximisation of *r* is verifiable, optimally reducing a psychometric scale to any given shorter length is a straightforward computational problem. reduceTo therefore approaches scale reduction by assessing every single possible combination of *n* items, and identifying the set that has the highest *r*<sub>parent</sub>.
+Because maximisation of *r* is a problem with a verifiable solution, optimally reducing a psychometric scale to any given shorter length is a straightforward computational problem. reduceTo therefore approaches scale reduction by assessing every single possible combination of *n* items, and identifying the set that has the highest *r*<sub>parent</sub>.
 
-Small reductions (from 10 items to 5, or from 20 to 3) are computationally trivial, but calculation size explodes as scale lengths increase. However, modern processors can carry out billions of calculations a second for algorithms written in compiled languages like C++. This makes it possible to, with patience, find exact solutions for most scale reduction problems a psychometrician could encounter.
+Small reductions are computationally trivial, but calculation size explodes as scale lengths increase. Reducing 12 items to 6 requires searching 924 combinations; but reducing 24 to 12 requires 2.7 million. However, modern CPUs can carry out billions of calculations a second for algorithms written in compiled languages like C++. This makes it possible to, with patience, find exact solutions for most scale reduction problems a psychometrician could encounter.
 
 However, beyond raw speed, reduceTo additionally does not need to inspect every combination by hand. Because it builds item sets up one step at a time (and because it starts with the most promising items first), it is often possible to prove mathematically that no remaining combination of items from the current branch can reach the current top 100. In these cases, the engine cuts this branch, often discarding millions of combinations that were not worth inspecting individually. This gives identical results to a manual exhaustive search, but in some cases reduces the search space by 99.9%, speeding up computation even further, and making almost any realistic problem tractable.
 
@@ -101,7 +101,7 @@ To see which walls an old house needs most, you could (in theory) remove each on
 
 1\. Iterative knockout: Starting from the full scale, knock out the item whose loss moves the centroid least, repeating until `n.items` remain.
 
-2\. Scan: For every item, assess how much swapping them in/out of the form, either alone or along with one other item, would lower the short form's *r*, and are ranked as such (lowest-impact changes at the top).
+2\. Scan: For every item, assess how much swapping them in/out of the form, either alone or along with one other item, would lower the short form's *r*, and are ranked from lowest-impact (i.e. least confidence about inclusion vs. exclusion) to highest-impact.
 
 3\. Search: Starting at the top of this list, score as many combinations as `knockout.budget` (`ceiling / 1000` by default) allows, holding the other items fixed, with the same Gram-matrix engine as the exhaustive search. If an improved short form is found during this process, repeat the scan & search process from this starting point.
 
@@ -282,12 +282,6 @@ Your exact mileage will vary with your hardware and use case, but reduceTo also 
 
 ## Methodological Notes
 
-### Best Practices
-
-- Garbage in, garbage out. Please, please ensure your parent scale is actually valid before you reduce it
-- Use your own judgement. Review the best solutions and check whether any items you think are 'bad' are being included; if they are, this indicates a problem with the parent scale
-- Consider cross-validation for smaller samples (*N* \< 300) where overfitting may be a concern
-
 ### Optimisation Reliability
 
 Benchmarked against exhaustive search on 2,211 problems with known top-50 sets (real IPIP-NEO, MEAQ, clinical and loneliness item pools of 20-62 items, single- and multi-construct, internal and external targets, plus synthetic synergy, suppressor and method-factor traps; up to 2.5 x 10\^11 combinations):
@@ -306,6 +300,12 @@ The default ceiling is now 10\^12: problems up to a trillion combinations are se
 - **Binarised r**: Applies optimal cutoff first, may find different solutions
 - **Cutoffs**: Reported on the conventional sum-score scale - reverse-keyed items are scored (min + max) - x, e.g. 6 - x for 1-5 items
 - **AUC**: Threshold-independent; always reported alongside the others (`leaderboard$auc`, `binary_info$results$auc`) and selectable via `method = "auc"`
+
+### Best Practices
+
+- Garbage in, garbage out. Please, please ensure your parent scale is actually valid before you reduce it
+- Use your own judgement. Review the best solutions and check whether any items you think are 'bad' are being included; if they are, this indicates a problem with the parent scale
+- Consider cross-validation for smaller samples (*N* \< 300) where overfitting may be a concern
 
 ------------------------------------------------------------------------
 
