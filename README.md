@@ -140,7 +140,7 @@ In the order they appear in `reduceTo()`: the essentials first, then output, dat
 ### Essential
 
 | Parameter | Description | Default |
-|------------------------|------------------------|------------------------|
+|----|----|----|
 | `data` | Matrix/data.frame of item responses | *required* |
 | `n.items` | Number of items in short form | *required* |
 | `target` | Target criterion (NULL = parent scale preservation) | `NULL` |
@@ -167,7 +167,7 @@ In the order they appear in `reduceTo()`: the essentials first, then output, dat
 ### Search
 
 | Parameter | Description | Default |
-|------------------------|------------------------|------------------------|
+|----|----|----|
 | `speed` | `"fast"` mean-imputes missing data to score combinations via a Gram-matrix shortcut (reported statistics are always recomputed from the true data); `"conservative"` uses pairwise deletion throughout with no imputation (recommended with `na.rm = FALSE` and substantial or patterned missingness) -- in a knockout search, it also scores every combination of the final closest calls directly | `"fast"` |
 | `ceiling` | Combination threshold triggering a knockout search | `1,000,000,000,000` (`10,000,000` with `speed = "conservative"`) |
 | `optimise` | If `NULL`, runs a knockout search when combinations exceed `ceiling`; `TRUE` runs one for any problem; `FALSE` forces exhaustive search regardless of `ceiling` | `NULL` |
@@ -177,7 +177,7 @@ In the order they appear in `reduceTo()`: the essentials first, then output, dat
 ### Console
 
 | Parameter | Description | Default |
-|------------------------|------------------------|------------------------|
+|----|----|----|
 | `verbose` | Print informational messages (binary detection, optimisation triggers, prefilter notices, etc.) -- set `FALSE` to silence these while keeping `show.progress`'s live updates | `TRUE` |
 | `show.progress` | Displays live progress bar and optimisation-stage updates | `TRUE` |
 
@@ -264,9 +264,15 @@ result <- reduceTo(
 Measured on a massive dataset (300 items, N = 300,000), scoring all C(300, 3) = 4,455,100 combinations directly against a continuous target, without optimisation. The same precomputed input fed to both engines, isolating the scoring step itself from the knockout search or other R-side overhead:
 
 | Engine | Combinations/sec | Time for 4.45M combinations |
+<<<<<<< Updated upstream
 |------------------------|------------------------|------------------------|
 | `speed = "fast"` (Gram matrix) | 1.6B+/s | \~0.29s (incl. one-time Gram precompute; the search itself takes \~3ms) |
 | `speed = "conservative"` (Row-scan algorithm) | \~9,800/s | \~7.6 min |
+=======
+|----|----|----|
+| `speed = "fast"` (Gram matrix) | 2B+/s | \~0.23s (incl. one-time Gram precompute; the search itself takes \~1-2ms) |
+| `speed = "conservative"` (Row-scan algorithm) | \~9,190/s | \~8.1 min |
+>>>>>>> Stashed changes
 
 **\~1,600x faster** than a standard row-scan engine for this case. This is close to the ceiling case for the Gram matrix approach (small `n.items` and large *N*, since row-scan cost scales with *N* per combination while the Gram engine's is roughly constant per combination, regardless of *N* or `n.items`).
 
@@ -275,7 +281,7 @@ Measured on a massive dataset (300 items, N = 300,000), scoring all C(300, 3) = 
 As a comparison, the "Base R Only" column below estimates the best-case scenario for base-R implementation (a vectorised per-combination `rowMeans()` + `cor()` loop), throughput-measured on a real sample of combinations and extrapolated to the full combination count. Assessed on real data, the IPIP-NEO Neuroticism scale (60 items, N = 5,000); reduceTo times are medians of 15 runs on an Apple M2 Pro:
 
 | Selecting | Combinations       | Base R Only      | reduceTo() (default settings) |
-|----------------|----------------|----------------|-------------------------|
+|-----------|--------------------|------------------|-------------------------------|
 | 3 of 60   | 34,220             | **\~2.4 sec**    | **0.01s**                     |
 | 5 of 60   | 5,461,512          | **\~8.2 min**    | **0.01s**                     |
 | 8 of 60   | 2,558,620,845      | **\~3.7 days**   | **0.04s** (exhaustive)        |
@@ -300,7 +306,7 @@ Your exact mileage will vary with your hardware and use case, but reduceTo also 
 Benchmarked against exhaustive search on 2,211 problems with known top-50 sets (real IPIP-NEO, MEAQ, clinical and loneliness item pools of 20-62 items, single- and multi-construct, internal and external targets, plus synthetic synergy, suppressor and method-factor traps; up to 2.5 x 10\^11 combinations):
 
 | Ceiling | Problems needing a knockout search | True solution ranked first | True top 5 recovered | True top 50 recovered |
-|---------------|---------------|---------------|---------------|---------------|
+|----|----|----|----|----|
 | 10\^8 | 765 | 100% | 99.9% | 99.9% |
 | 10\^6 | 1,678 | 99.9% | 99.8% | 99.5% |
 
