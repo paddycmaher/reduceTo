@@ -1,66 +1,32 @@
-# One-off: reproduce the gcc15 and clang-asan crashes under gdb (and valgrind), to get C++ backtraces.
-# Dependencies are set up by R-hub's own actions, exactly as in an R-hub check.
-# Run from the Actions tab ("debug-crash" -> Run workflow); delete this file once the crash is fixed.
+# One-off: check reduceTo under clang-asan with dependencies built from source in the container itself.
+# (R-hub's clang-asan job restores a package cache it shares by key prefix with the g++ donttest job, so it
+# ends up with Rcpp and RcppParallel built against libstdc++ while the package uses libc++.)
+# Run from the Actions tab ("debug-crash" -> Run workflow); delete this file once done.
 name: debug-crash
 
 on: workflow_dispatch
 
 jobs:
-  setup:
+  clang-asan:
     runs-on: ubuntu-latest
-    outputs:
-      containers: ${{ steps.rhub-setup.outputs.containers }}
+    container: ghcr.io/r-hub/containers/clang-asan:latest
     steps:
-    - uses: r-hub/actions/setup@v1
-      with:
-        config: gcc15,clang-asan
-      id: rhub-setup
+      - uses: actions/checkout@v4
 
-  crash:
-    needs: setup
-    runs-on: ubuntu-latest
-    name: ${{ matrix.config.label }}
-    strategy:
-      fail-fast: false
-      matrix:
-        config: ${{ fromJson(needs.setup.outputs.containers) }}
-    container:
-      image: ${{ matrix.config.container }}
-    steps:
-      - uses: r-hub/actions/checkout@v1
-      - uses: r-hub/actions/platform-info@v1
-        with:
-          token: ${{ secrets.RHUB_TOKEN }}
-          job-config: ${{ matrix.config.job-config }}
-      - uses: r-hub/actions/setup-deps@v1
-        with:
-          token: ${{ secrets.RHUB_TOKEN }}
-          job-config: ${{ matrix.config.job-config }}
+      - name: System libraries (cmake for RcppParallel's TBB, libuv for fs), gdb
+        run: apt-get update && apt-get install -y gdb cmake libuv1-dev libcurl4-openssl-dev libssl-dev
 
-      - name: Install gdb and valgrind
+      - name: Rcpp, RcppParallel and testthat from source, with the container's compilers (no cache)
         run: |
-          if command -v dnf >/dev/null; then dnf install -y gdb valgrind; else apt-get update && apt-get install -y gdb valgrind; fi
+          Rscript -e 'install.packages(c("Rcpp", "RcppParallel", "testthat"), repos = "https://cloud.r-project.org", type = "source", Ncpus = 4)'
           Rscript -e 'for (p in c("Rcpp", "RcppParallel", "testthat")) if (!requireNamespace(p, quietly = TRUE)) stop(p, " is missing")'
+          Rscript -e 'cat(system.file(package = "Rcpp"), system.file(package = "RcppParallel"), "\n")'
 
-      - name: Install reduceTo with debug symbols (the container's own flags, plus -g)
-        run: |
-          mkdir -p ~/.R && echo 'CXXFLAGS += -g' >> ~/.R/Makevars
-          R CMD INSTALL .
+      - name: Install reduceTo
+        run: R CMD INSTALL .
 
-      - name: Write the crashing cases
+      - name: Run the test suite 5 times under gdb
         run: |
-          cat > crash.R <<'EOF'
-          library(reduceTo)
-          RcppParallel::setThreadOptions(numThreads = 2)
-          cat("case 1: exhaustive, 4 of 10 (crashed on clang-asan)\n")
-          set.seed(1); data <- as.data.frame(matrix(rnorm(200 * 10), ncol = 10))
-          print(reduceTo(data, n.items = 4, show.progress = FALSE, verbose = FALSE)$r)
-          cat("case 2: knockout, 20 of 24, ceiling 1e4 (crashed on gcc15)\n")
-          set.seed(4); n <- 1000; f <- rnorm(n)
-          data <- as.data.frame(sapply(1:24, function(j) runif(1, 0.2, 0.9) * f + rnorm(n)))
-          print(reduceTo(data, n.items = 20, ceiling = 10000, show.progress = FALSE, verbose = FALSE)$r)
-          cat("no crash\n")
-          EOF
           cat > suite.R <<'EOF'
           library(testthat); library(reduceTo)
           for (pass in 1:5) { cat("===== test suite, pass", pass, "=====\n")
@@ -74,23 +40,12 @@ jobs:
           run --vanilla -f suite.R
           echo \n===== backtrace of the crashing thread =====\n
           bt 40
-          echo \n===== registers and instructions at the crash =====\n
-          info registers rip rsp rdi rsi rax
-          x/16i $pc-32
-          echo \n===== all threads =====\n
-          thread apply all bt 12
           quit
           EOF
+          NOT_CRAN=true R -d gdb --debugger-args="-batch -x cmds.gdb" || true
 
-      - name: Run the test suite 5 times under gdb
-        run: R -d gdb --debugger-args="-batch -x cmds.gdb" || true
-
-      - name: R CMD check, as R-hub runs it
+      - name: R CMD check, as R-hub runs it (sanitizer reports print in the test output)
         run: |
           R CMD build --no-build-vignettes --no-manual .
-          _R_CHECK_FORCE_SUGGESTS_=false R CMD check --no-manual --as-cran reduceTo_*.tar.gz || true
-          cat reduceTo.Rcheck/tests/testthat.Rout.fail 2>/dev/null | tail -80 || true
-
-      - name: Run under valgrind (gcc15 only)
-        if: contains(matrix.config.container, 'gcc15')
-        run: R -d "valgrind --track-origins=yes --error-limit=no" --vanilla -f crash.R || true
+          NOT_CRAN=true _R_CHECK_FORCE_SUGGESTS_=false R CMD check --no-manual --as-cran reduceTo_*.tar.gz || true
+          cat reduceTo.Rcheck/tests/testthat.Rout* 2>/dev/null | grep -E "runtime error|AddressSanitizer|SUMMARY|FAIL|caught segfault" || echo "no sanitizer reports or failures in the test output"
