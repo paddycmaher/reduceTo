@@ -1,12 +1,12 @@
-# reduceTo: High-Performance Combinatorial Scale Reduction
+# reduceTo: Exact High-Performance Combinatorial Scale Reduction
 
-**Find the optimal unit-weighted subset of items from any item bank through an ultra-fast exhaustive search.**
+**Find the exact optimal unit-weighted subset of items from any item bank through an ultra-fast exhaustive search.**
 
 ------------------------------------------------------------------------
 
 ## Overview
 
-`reduceTo()` solves the combinatorial optimisation problem of selecting *`n`* items from a larger pool that maximise correlation with a target criterion. reduceTo can be used to shorten existing psychological scales, build diagnostic screeners, or derive scales from item banks based on an external criterion.
+`reduceTo()` exactly solves the combinatorial optimisation problem of selecting *`n`* items from a larger pool that maximise correlation with a target criterion. reduceTo can be used to shorten existing psychological scales, build diagnostic screeners, or derive scales from item banks based on an external criterion.
 
 ### Key Features
 
@@ -77,34 +77,27 @@ result <- reduceTo(data, n.items = 6, target = diagnosis)
 
 ### Shortening Scales for Preservation
 
-A scale's central axis, i.e. the average vector of all its items, is its 'centroid' (Little, Lindenberger & Nesselroade, 1999), a vector that defines which dimension of psychology it captures.
+A scale's central axis, i.e. the average vector of all its items, is its 'centroid' (Little, Lindenberger & Nesselroade, 1999), a vector that defines which specific dimension of human psychology it captures.
 
-The similarity of any two scales is determined by the cosine of the angle between their centroids: that is, their Pearson correlation, *r*. Whenever shortening a scale with the goal of preserving the parent scale's validity, maximising *r* is therefore definitionally the optimal approach. Adopting any other metric risks distorting the psychological construct captured by the scale by more than is necessary, discarding signal and reorienting the centroid down a new axis.
+The similarity of any two scales is determined by the cosine of the angle between their centroids: that is, their Pearson correlation, *r*. Whenever shortening a scale with the goal of preserving the parent scale's validity, maximising *r* is definitionally the optimal approach. Any other criterion risks distorting the psychological construct captured by the scale by more than is necessary, discarding signal and reorienting the centroid down a new axis.
 
-Because maximisation of *r* is verifiable, optimally reducing a psychometric scale to any given shorter length is a straightforward computational problem.
+A short form might achieve a high correlation with its parent scale (*r*<sub>parent</sub>) because its items are all perfectly parallel to the parent's centroid, or (more commonly) because its items balance one other – like the legs of a chair, or the struts and walls in a house. This counterbalancing means that, rather than some items being statically 'good' or 'bad', certain item sets work well together, and others do not. Additionally, just as in stool design, it means that the best three-item solution does not necessarily share any features with the best four-item solution. Items need to be weighed in combination with one another, rather than on their individual merits.
 
-A short form might achieve a high correlation with the parent scale (*r*<sub>parent</sub>) because its items are all parallel to the parent's centroid, or because its items balance one other – like the legs of a chair, or the struts and walls in a house. This counterbalancing means that, rather than some items being statically 'good' or 'bad', certain item sets work well together, and others do not. Additionally, just as in stool design, it means that the best three-item solution does not necessarily share any features with the best four-item solution. Items need to be weighed in combination with one another, rather than on their individual merits.
+## The Algorithm
 
 ### Exhaustive Search
 
-reduceTo therefore approaches scale reduction by assessing every single possible combination of *n* items, and identifying the set that has the highest *r*<sub>parent</sub>.
+Because maximisation of *r* is verifiable, optimally reducing a psychometric scale to any given shorter length is a straightforward computational problem. reduceTo therefore approaches scale reduction by assessing every single possible combination of *n* items, and identifying the set that has the highest *r*<sub>parent</sub>.
 
-Small reductions (from 10 items to 5, or from 20 to 3) are computationally trivial, but calculation size explodes as scale lengths increase. However, modern processors can carry out billions of calculations a second for algorithms written in compiled languages like C++.
+Small reductions (from 10 items to 5, or from 20 to 3) are computationally trivial, but calculation size explodes as scale lengths increase. However, modern processors can carry out billions of calculations a second for algorithms written in compiled languages like C++. This makes it possible to, with patience, find exact solutions for most scale reduction problems a psychometrician could encounter.
 
-However, it does not always need to inspect every combination by hand. Because it builds item sets up one step at a time, it is frequently possible to prove mathematically that no combination of items from the current branch can reach the current top 100. In these cases, the engine cuts this branch, often discarding millions of combinations that were not worth inspecting individually. This gives identical results to a manual exhaustive search, but in some cases reduces the search space by 99.9%, speeding up computation even further.
+However, beyond raw speed, reduceTo additionally does not need to inspect every combination by hand. Because it builds item sets up one step at a time (and because it starts with the most promising items first), it is often possible to prove mathematically that no remaining combination of items from the current branch can reach the current top 100. In these cases, the engine cuts this branch, often discarding millions of combinations that were not worth inspecting individually. This gives identical results to a manual exhaustive search, but in some cases reduces the search space by 99.9%, speeding up computation even further, and making almost any realistic problem tractable.
 
-### Knockout Search for Large Pools
+### Knockout Search
 
-reduceTo's exhaustive search backend is extremely fast, running at tens of billions of operations a second. However, for massive problems where exhaustive search isn't tractable, reduceTo switches to a **knockout search**.
+reduceTo's exhaustive search backend is extremely fast, running at tens of billions of operations a second. However, for massive problems where exhaustive search isn't tractable, reduceTo automatically switches to a **Knockout search**.
 
 To see which walls an old house needs most, you could (in theory) remove each one in turn and measure whether the house slumps. reduceTo knocks items out of the source scale in the same way, assessing how each knockout moves the scale's centroid. This is used to walk to a first answer; then, from this answer, nearby combinations are explored to ensure no better answers are missed.
-
-``` r
-# Choose 10 from 200 items (22 quadrillion combinations)
-result <- reduceTo(data = large_item_bank, n.items = 10)
-```
-
-**Algorithm:**
 
 1\. Iterative knockout: Starting from the full scale, knock out the item whose loss moves the centroid least, repeating until `n.items` remain.
 
@@ -120,7 +113,7 @@ Finally, the best short forms are added to the leaderboard, and re-scored exactl
 
 ### Cross-Validation
 
-Because reduced scales are sum-scored, overfitting is not generally a significant issue for reduceTo. However, for large item reductions in small samples, where short scales may suffer from winner's curse, reduceTo contains an option to split the data into a discovery and holdout sample. Results in both are reported, giving an estimate of the degree of overfitting. Default split is set at 75/25, but this is adjustable with e.g. `cross.validate = 0.6` for a 60/40 split.
+Because reduced scales are sum-scored, overfitting is not generally a significant issue for reduceTo-reduced scales. However, for very large item reductions in small samples, where derived scales may suffer from winner's curse, reduceTo contains an option to split the data into a discovery and holdout sample. Results in both are reported, giving an estimate of the degree of overfitting. Holdout *r* values are representative of real-world performance, and should be reported in your write up. Default split is set at 75/25, but this is adjustable with e.g. `cross.validate = 0.6` for a 60/40 split.
 
 ``` r
 result <- reduceTo(
@@ -140,7 +133,7 @@ In the order they appear in `reduceTo()`: the essentials first, then output, dat
 ### Essential
 
 | Parameter | Description | Default |
-|----|----|----|
+|------------------------|------------------------|------------------------|
 | `data` | Matrix/data.frame of item responses | *required* |
 | `n.items` | Number of items in short form | *required* |
 | `target` | Target criterion (NULL = parent scale preservation) | `NULL` |
@@ -167,7 +160,7 @@ In the order they appear in `reduceTo()`: the essentials first, then output, dat
 ### Search
 
 | Parameter | Description | Default |
-|----|----|----|
+|------------------------|------------------------|------------------------|
 | `speed` | `"fast"` mean-imputes missing data to score combinations via a Gram-matrix shortcut (reported statistics are always recomputed from the true data); `"conservative"` uses pairwise deletion throughout with no imputation (recommended with `na.rm = FALSE` and substantial or patterned missingness) -- in a knockout search, it also scores every combination of the final closest calls directly | `"fast"` |
 | `ceiling` | Combination threshold triggering a knockout search | `1,000,000,000,000` (`10,000,000` with `speed = "conservative"`) |
 | `optimise` | If `NULL`, runs a knockout search when combinations exceed `ceiling`; `TRUE` runs one for any problem; `FALSE` forces exhaustive search regardless of `ceiling` | `NULL` |
@@ -177,7 +170,7 @@ In the order they appear in `reduceTo()`: the essentials first, then output, dat
 ### Console
 
 | Parameter | Description | Default |
-|----|----|----|
+|------------------------|------------------------|------------------------|
 | `verbose` | Print informational messages (binary detection, optimisation triggers, prefilter notices, etc.) -- set `FALSE` to silence these while keeping `show.progress`'s live updates | `TRUE` |
 | `show.progress` | Displays live progress bar and optimisation-stage updates | `TRUE` |
 
@@ -264,15 +257,9 @@ result <- reduceTo(
 Measured on a massive dataset (300 items, N = 300,000), scoring all C(300, 3) = 4,455,100 combinations directly against a continuous target, without optimisation. The same precomputed input fed to both engines, isolating the scoring step itself from the knockout search or other R-side overhead:
 
 | Engine | Combinations/sec | Time for 4.45M combinations |
-<<<<<<< Updated upstream
 |------------------------|------------------------|------------------------|
 | `speed = "fast"` (Gram matrix) | 1.6B+/s | \~0.29s (incl. one-time Gram precompute; the search itself takes \~3ms) |
 | `speed = "conservative"` (Row-scan algorithm) | \~9,800/s | \~7.6 min |
-=======
-|----|----|----|
-| `speed = "fast"` (Gram matrix) | 2B+/s | \~0.23s (incl. one-time Gram precompute; the search itself takes \~1-2ms) |
-| `speed = "conservative"` (Row-scan algorithm) | \~9,190/s | \~8.1 min |
->>>>>>> Stashed changes
 
 **\~1,600x faster** than a standard row-scan engine for this case. This is close to the ceiling case for the Gram matrix approach (small `n.items` and large *N*, since row-scan cost scales with *N* per combination while the Gram engine's is roughly constant per combination, regardless of *N* or `n.items`).
 
@@ -281,17 +268,17 @@ Measured on a massive dataset (300 items, N = 300,000), scoring all C(300, 3) = 
 As a comparison, the "Base R Only" column below estimates the best-case scenario for base-R implementation (a vectorised per-combination `rowMeans()` + `cor()` loop), throughput-measured on a real sample of combinations and extrapolated to the full combination count. Assessed on real data, the IPIP-NEO Neuroticism scale (60 items, N = 5,000); reduceTo times are medians of 15 runs on an Apple M2 Pro:
 
 | Selecting | Combinations       | Base R Only      | reduceTo() (default settings) |
-|-----------|--------------------|------------------|-------------------------------|
+|------------------|------------------|------------------|-------------------|
 | 3 of 60   | 34,220             | **\~2.4 sec**    | **0.01s**                     |
 | 5 of 60   | 5,461,512          | **\~8.2 min**    | **0.01s**                     |
 | 8 of 60   | 2,558,620,845      | **\~3.7 days**   | **0.04s** (exhaustive)        |
-| 10 of 60  | 75,394,027,566     | **\~4.2 months** | **0.60s** (exhaustive)         |
-| 12 of 60  | 1,399,358,844,975  | **\~9 years**    | **0.60s** (knockout search)    |
-| 15 of 60  | 53,194,089,192,720 | **\~400 years**  | **0.60s** (knockout search)    |
+| 10 of 60  | 75,394,027,566     | **\~4.2 months** | **0.60s** (exhaustive)        |
+| 12 of 60  | 1,399,358,844,975  | **\~9 years**    | **0.60s** (knockout search)   |
+| 15 of 60  | 53,194,089,192,720 | **\~400 years**  | **0.60s** (knockout search)   |
 
 Collectively, the C++ backend, Gram-matrix scoring, branch-cutting, and knockout search let reduceTo shorten what might be a months-long base-R search to seconds.
 
-Your exact mileage will vary with your hardware and use case, but reduceTo also computes a live ETA.
+Your exact mileage will vary with your hardware and use case, but reduceTo also computes and displays a live ETA.
 
 ## Methodological Notes
 
@@ -306,7 +293,7 @@ Your exact mileage will vary with your hardware and use case, but reduceTo also 
 Benchmarked against exhaustive search on 2,211 problems with known top-50 sets (real IPIP-NEO, MEAQ, clinical and loneliness item pools of 20-62 items, single- and multi-construct, internal and external targets, plus synthetic synergy, suppressor and method-factor traps; up to 2.5 x 10\^11 combinations):
 
 | Ceiling | Problems needing a knockout search | True solution ranked first | True top 5 recovered | True top 50 recovered |
-|----|----|----|----|----|
+|---------------|---------------|---------------|---------------|---------------|
 | 10\^8 | 765 | 100% | 99.9% | 99.9% |
 | 10\^6 | 1,678 | 99.9% | 99.8% | 99.5% |
 
