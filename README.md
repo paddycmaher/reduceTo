@@ -74,8 +74,9 @@ diagnosis <- c(0, 1, 0, 1, 1, ...)
 result <- reduceTo(data, n.items = 6, target = diagnosis)
 # Returns: optimal cutoff, sensitivity, specificity, Youden's J
 ```
+------------------------------------------------------------------------
 
-### Shortening Scales for Preservation
+## Shortening Scales for Preservation
 
 A scale's central axis, i.e. the average vector of all its items, is its 'centroid' (Little, Lindenberger & Nesselroade, 1999), a vector that defines which specific dimension of human psychology it captures.
 
