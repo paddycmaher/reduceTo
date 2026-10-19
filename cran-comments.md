@@ -5,7 +5,11 @@ This is a new submission.
 ## Test environments
 
 * local macOS 26 (aarch64), R 4.5.2
-* (to add: win-builder R-devel and R-release; macOS builder; R-hub Linux, including sanitizers)
+* R-hub (GitHub Actions), R-devel (2026-10-18): Ubuntu Linux, Windows, macOS (x86_64 and arm64),
+  m1-san (macOS arm64, ASan/UBSan), gcc-asan, clang-ubsan, valgrind, gcc15 (Fedora), donttest
+* clang-asan (R-hub's container, R-devel; Rcpp, RcppParallel and testthat built from source with the
+  same compiler): no sanitizer reports
+* (to add: win-builder R-devel and R-release)
 
 ## R CMD check results
 
