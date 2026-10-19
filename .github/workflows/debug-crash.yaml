@@ -20,7 +20,7 @@ jobs:
           if command -v dnf >/dev/null; then dnf install -y gdb valgrind cmake; else apt-get update && apt-get install -y gdb valgrind cmake; fi
 
       - name: Install dependencies
-        run: Rscript -e 'install.packages(c("Rcpp", "RcppParallel"), repos = "https://cloud.r-project.org")'
+        run: Rscript -e 'install.packages(c("Rcpp", "RcppParallel", "testthat"), repos = "https://cloud.r-project.org", Ncpus = 4)'
 
       - name: Install reduceTo with debug symbols (the container's own flags, plus -g)
         run: |
@@ -41,11 +41,17 @@ jobs:
           print(reduceTo(data, n.items = 20, ceiling = 10000, show.progress = FALSE, verbose = FALSE)$r)
           cat("no crash\n")
           EOF
+          cat > suite.R <<'EOF'
+          library(testthat); library(reduceTo)
+          for (pass in 1:5) { cat("===== test suite, pass", pass, "=====\n")
+            test_dir("tests/testthat", reporter = "summary", stop_on_failure = FALSE, load_package = "installed") }
+          cat("no crash in 5 passes\n")
+          EOF
           cat > cmds.gdb <<'EOF'
           set pagination off
           set confirm off
           handle SIGPIPE nostop noprint
-          run --vanilla -f crash.R
+          run --vanilla -f suite.R
           echo \n===== backtrace of the crashing thread =====\n
           bt 40
           echo \n===== registers and instructions at the crash =====\n
@@ -56,8 +62,14 @@ jobs:
           quit
           EOF
 
-      - name: Run under gdb
+      - name: Run the test suite 5 times under gdb
         run: R -d gdb --debugger-args="-batch -x cmds.gdb" || true
+
+      - name: R CMD check, as R-hub runs it
+        run: |
+          R CMD build --no-build-vignettes --no-manual .
+          _R_CHECK_FORCE_SUGGESTS_=false R CMD check --no-manual --as-cran reduceTo_*.tar.gz || true
+          cat reduceTo.Rcheck/tests/testthat.Rout.fail 2>/dev/null | tail -80 || true
 
       - name: Run under valgrind (gcc15 only)
         if: matrix.image == 'gcc15'
