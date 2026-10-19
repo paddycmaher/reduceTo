@@ -75,7 +75,7 @@ result <- reduceTo(data, n.items = 6, target = diagnosis)
 # Returns: optimal cutoff, sensitivity, specificity, Youden's J
 ```
 
-### Exhaustive Search
+### Shortening Scales for Preservation
 
 A scale's central axis, i.e. the average vector of all its items, is its 'centroid' (Little, Lindenberger & Nesselroade, 1999), a vector that defines which dimension of psychology it captures.
 
@@ -83,9 +83,11 @@ The similarity of any two scales is determined by the cosine of the angle betwee
 
 Because maximisation of *r* is verifiable, optimally reducing a psychometric scale to any given shorter length is a straightforward computational problem.
 
-A short form might achieve a high correlation with the parent scale (*r*~parent~) because its items are all parallel to the parent's centroid, or because its items balance one other – like the legs of a chair, or the struts and walls in a house. This counterbalancing means that, rather than some items being statically 'good' or 'bad', certain item sets work well together, and others do not. Additionally, just as in stool design, it means that the best three-item solution does not necessarily share any features with the best four-item solution. Items need to be weighed as a set, rather than on their individual merits.
+A short form might achieve a high correlation with the parent scale (*r*<sub>parent</sub>) because its items are all parallel to the parent's centroid, or because its items balance one other – like the legs of a chair, or the struts and walls in a house. This counterbalancing means that, rather than some items being statically 'good' or 'bad', certain item sets work well together, and others do not. Additionally, just as in stool design, it means that the best three-item solution does not necessarily share any features with the best four-item solution. Items need to be weighed in combination with one another, rather than on their individual merits.
 
-**reduceTo therefore approaches scale reduction by assessing every single possible combination of *n* items, and identifying the set that has the highest *r*~parent~.**
+### Exhaustive Search
+
+reduceTo therefore approaches scale reduction by assessing every single possible combination of *n* items, and identifying the set that has the highest *r*<sub>parent</sub>.
 
 Small reductions (from 10 items to 5, or from 20 to 3) are computationally trivial, but calculation size explodes as scale lengths increase. However, modern processors can carry out billions of calculations a second for algorithms written in compiled languages like C++.
 
