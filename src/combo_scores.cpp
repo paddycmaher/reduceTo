@@ -11,31 +11,26 @@
 #include <cstring>
 #include <cstdint>
 
-using namespace Rcpp;
-using namespace RcppParallel;
+#include "gram_engine.h"   // progress-bar settings, the Gram tree-walk worker and its branch splitter
+#include "parallel_guard.h"   // parallel loops that fall back to one thread in a fork()'d child
+
+// The Rcpp and RcppParallel names this file uses unqualified; everything else is written in full (Rcpp::stop, ...)
+using Rcpp::NumericVector;
+using Rcpp::NumericMatrix;
+using Rcpp::IntegerVector;
+using Rcpp::IntegerMatrix;
+using Rcpp::CharacterVector;
+using Rcpp::List;
+using Rcpp::Named;
+using RcppParallel::Worker;
+using RcppParallel::RVector;
+using RcppParallel::RMatrix;
+
 
 // ============================================================================
 //  CONFIG
 // ============================================================================
-#define BAR_WIDTH 30
-#define BAR_START "}"   // Start line
-#define BAR_FILL  "~"   // Completed blocks
-#define BAR_EMPTY " "   // Remaining blocks
-#define BAR_END   "{"   // Finish line
-#define NA_BYTE   255  // The 8-bit representation of NA
-// Minimum time between progress-bar redraws. ~30fps is well past the point
-// of looking perceptibly "instant/smooth" to a human eye, but each redraw
-// costs a real, blocking std::flush() -- printing far above this rate (the
-// old code redrew on every batch boundary, easily hundreds of times/sec on
-// fast runs) burns real compute on I/O nobody can actually see.
-#define MIN_UPDATE_INTERVAL_MS 33.0
-// Target wall time per dispatch batch. Every batch boundary stalls all threads
-// (the batch can't finish until its slowest piece does) for ~1.5-2.5ms, so
-// batches are sized from measured throughput rather than a fixed combination
-// count: ~100ms gives a steady ~10fps progress/interrupt check on any run size
-// for ~2% overhead (fixed 2e7-combination batches cost ~15-20% on the Gram
-// engine, while 1/60-of-total batches refreshed only every few seconds on huge runs).
-#define TARGET_BATCH_MS 100.0
+constexpr uint8_t NA_BYTE = 255;   // The 8-bit representation of NA
 
 // Shared 32-bit -> 8-bit packing logic (values already expected to fit 0-254,
 // with 255 / NA_INTEGER treated as the NA sentinel). Used both by the
@@ -56,16 +51,10 @@ static inline void pack_bytes(const int* src_ptr, uint8_t* dst_ptr, size_t total
 //  COMBINATORICS
 // ============================================================================
 
-#define TIMESTAMP timestamps.push_back(std::chrono::high_resolution_clock::now())
+// Marks the end of a timed step: each entry point keeps a list of these, reported as seconds per step
+using Clock = std::chrono::high_resolution_clock;
+static inline void stamp(std::vector<Clock::time_point>& t) { t.push_back(Clock::now()); }
 
-double calculate_combinations_double(int n, int k) {
-  if (k < 0 || k > n) return 0;
-  if (k == 0 || k == n) return 1;
-  if (k > n - k) k = n - k;
-  double result = 1;
-  for (int i = 0; i < k; i++) result = result * (n - i) / (i + 1);
-  return result;
-}
 
 void get_combination_nth(long long target_index, int n, int r, std::vector<int>& result) {
   long long c = 0; 
@@ -97,15 +86,22 @@ inline void next_combination(std::vector<int>& indices, int n, int k) {
 // ============================================================================
 //  TEMPLATED WORKER (The Efficiency Engine)
 // ============================================================================
-// We template bool NA_RM so the 'if' statement is removed at compile time.
+// We template bool NA_RM so the 'if' statement is removed at compile time, and
+// FIXED for searches where some items belong to every combination (the knockout search's
+// kept items under speed = "conservative"): their per-row sums and counts are
+// computed once and start every row's total.
 
-template <bool NA_RM>
+template <bool NA_RM, bool FIXED>
 struct ComboWorker : public Worker {
   const uint8_t* data_ptr; // Points to 8-bit compressed data
   const int n_rows;
   const RVector<double> target;
   const int n_items;
   const int num_choose_from; 
+  const int n_fixed;
+  const int* base_sum;     // per row: sum / count of the fixed items present,
+  const int* base_valid;   // and whether all of them are (na.rm = FALSE)
+  const char* base_ok;
   
   std::vector<float>& results;
   
@@ -113,9 +109,11 @@ struct ComboWorker : public Worker {
               const NumericVector& target,
               int n_items,
               int num_choose_from,
+              int n_fixed, const int* base_sum, const int* base_valid, const char* base_ok,
               std::vector<float>& results)
     : data_ptr(packed_data.data()), n_rows(target.size()), target(target),
-      n_items(n_items), num_choose_from(num_choose_from), 
+      n_items(n_items), num_choose_from(num_choose_from), n_fixed(n_fixed),
+      base_sum(base_sum), base_valid(base_valid), base_ok(base_ok),
       results(results) {}
   
   void operator()(std::size_t begin, std::size_t end) {
@@ -129,7 +127,7 @@ struct ComboWorker : public Worker {
       
       // Update pointers (Fast 8-bit pointer arithmetic)
       for(int i = 0; i < n_items; ++i) {
-        col_ptrs[i] = data_ptr + (current_combo[i] * n_rows);
+        col_ptrs[i] = data_ptr + (size_t)current_combo[i] * n_rows;
       }
       
       double sum_scores = 0.0, sum_scores_sq = 0.0;
@@ -140,9 +138,10 @@ struct ComboWorker : public Worker {
       for (int row = 0; row < n_rows; ++row) {
         double t = target[row];
         if (NumericVector::is_na(t)) continue; 
+        if (FIXED && !NA_RM && !base_ok[row]) continue;
         
-        int row_sum = 0;
-        int valid_items = 0;
+        int row_sum = FIXED ? base_sum[row] : 0;
+        int valid_items = FIXED ? base_valid[row] : 0;
         bool possible = true;
         
         // --- INNER LOOP (OPTIMIZED) ---
@@ -168,7 +167,7 @@ struct ComboWorker : public Worker {
         // Score Calculation
         float score;
         if (NA_RM) {
-          if (valid_items > 0) score = ((float)row_sum / valid_items) * n_items;
+          if (valid_items > 0) score = ((float)row_sum / valid_items) * (n_items + (FIXED ? n_fixed : 0));
           else continue;
         } else {
           score = (float)row_sum;
@@ -195,36 +194,6 @@ struct ComboWorker : public Worker {
     }
   }
 };
-
-// Helpers for UI
-std::string format_num(long long num) {
-  std::string s = std::to_string(num);
-  int n = s.length() - 3;
-  while (n > 0) { s.insert(n, ","); n -= 3; }
-  return s;
-}
-
-std::string format_time(double seconds) {
-  if (seconds < 60) {
-    return std::to_string((int)seconds) + "s";
-  } else if (seconds < 3600) {
-    int m = (int)(seconds / 60);
-    int s = (int)(seconds) % 60;
-    return std::to_string(m) + "m " + std::to_string(s) + "s";
-  } else if (seconds < 86400) { // Less than 1 day
-    int h = (int)(seconds / 3600);
-    int m = (int)((long long)seconds % 3600) / 60;
-    return std::to_string(h) + "h " + std::to_string(m) + "m";
-  } else if (seconds < 31536000) { // Less than 1 year (365 days)
-    int d = (int)(seconds / 86400);
-    int h = (int)((long long)seconds % 86400) / 3600;
-    return std::to_string(d) + "d " + std::to_string(h) + "h";
-  } else { // Years
-    int y = (int)(seconds / 31536000);
-    int d = (int)((long long)seconds % 31536000) / 86400;
-    return std::to_string(y) + "y " + std::to_string(d) + "d";
-  }
-}
 
 // ============================================================================
 //  EXACT PARALLEL TOP-K SELECTION
@@ -257,7 +226,7 @@ std::string format_time(double seconds) {
 // comparison and cost nothing further -- no allocation, no reordering, no
 // touching the heap at all -- so total work is close to a single sequential
 // read of results[], not an O(n log k) sort of it.
-#define N_TOPK_CHUNKS 256
+constexpr int N_TOPK_CHUNKS = 256;
 
 struct ScoreIdx {
   float score;  // NA already mapped to -1 by the caller -- always sorts worst
@@ -322,7 +291,7 @@ std::vector<int> parallel_top_k(const std::vector<float>& results, int n_combos,
 
   std::vector<std::vector<ScoreIdx>> chunk_results(num_chunks);
   ChunkTopKWorker chunk_worker(results, n_top, n_combos, num_chunks, chunk_results);
-  parallelFor(0, num_chunks, chunk_worker);
+  par_for(0, num_chunks, chunk_worker);
 
   std::vector<ScoreIdx> merged;
   merged.reserve((size_t)num_chunks * n_top);
@@ -339,6 +308,50 @@ std::vector<int> parallel_top_k(const std::vector<float>& results, int n_combos,
   return idx;
 }
 
+// Scores every combination with one worker type, in batches that let the user
+// interrupt (with or without the progress bar: one unbatched call couldn't be
+// stopped until it had scored everything)
+template <bool NA_RM, bool FIXED>
+static void run_combo_search(const std::vector<uint8_t>& packed_data, const NumericVector& target, int n_items, int num_choose_from,
+                             int n_fixed, const std::vector<int>& base_sum, const std::vector<int>& base_valid,
+                             const std::vector<char>& base_ok, std::vector<float>& results, int n_combos, bool show_progress) {
+  ComboWorker<NA_RM, FIXED> worker(packed_data, target, n_items, num_choose_from, n_fixed,
+                                   base_sum.data(), base_valid.data(), base_ok.data(), results);
+
+  auto start_time = std::chrono::high_resolution_clock::now();
+  int batch_size = std::min(1000, n_combos);  // first batch only -- then sized from measured throughput to take ~TARGET_BATCH_MS
+  double last_print_ms = -MIN_UPDATE_INTERVAL_MS;
+  for (int start = 0, end = 0; start < n_combos; start = end) {
+    end = start + batch_size;
+    par_for(start, end, worker);
+    Rcpp::checkUserInterrupt();
+    double ms_done = std::chrono::duration<double, std::milli>(std::chrono::high_resolution_clock::now() - start_time).count();
+    batch_size = (int)std::min(std::max(end / std::max(ms_done, 1.0) * TARGET_BATCH_MS, 1000.0), (double)(n_combos - end));
+
+    // Progress Bar Update -- throttled to a real, human-perceptible
+    // refresh rate rather than redrawing on every batch boundary
+    if (!show_progress) continue;
+    auto now = std::chrono::high_resolution_clock::now();
+    double ms_since_start = std::chrono::duration_cast<std::chrono::milliseconds>(now - start_time).count();
+    bool is_last_batch = (end == n_combos);
+    if (ms_since_start - last_print_ms >= MIN_UPDATE_INTERVAL_MS || is_last_batch) {
+      last_print_ms = ms_since_start;
+      double seconds = std::max(ms_since_start, 1.0) / 1000.0;
+      double pct = (double)end / n_combos;
+      double speed = end / seconds;
+      double eta = (n_combos - end) / speed;
+      int filled = (int)(BAR_WIDTH * pct);
+      std::string bar = BAR_START;
+      for (int i = 0; i < BAR_WIDTH; ++i) bar += (i < filled ? BAR_FILL : BAR_EMPTY);
+      bar += BAR_END;
+      Rcpp::Rcout << "\r" << bar << " " << std::fixed << std::setprecision(0) << (pct * 100) << "%"
+                  << " | " << format_num((long long)speed) << "/s"
+                  << " | ETA: " << format_time(eta) << "   " << std::flush;
+    }
+  }
+  if (show_progress) Rcpp::Rcout << "\r" << std::string(80, ' ') << "\r";
+}
+
 // [[Rcpp::export]]
 List process_all_combinations_cpp_parallel_float(
     IntegerMatrix data,
@@ -348,17 +361,19 @@ List process_all_combinations_cpp_parallel_float(
     NumericVector target,
     IntegerVector original_indices,
     int keep_top = 100,
-    bool show_progress = true
+    bool show_progress = true,
+    int n_fixed = 0           // the last n_fixed columns belong to every combination
 ) 
 {
+  if (n_fixed > 0 && data.ncol() != num_choose_from + n_fixed) Rcpp::stop("data must hold the num_choose_from candidates followed by the n_fixed fixed items.");
   double n_combos_d = calculate_combinations_double(num_choose_from, n_items);
-  if (n_combos_d > 2000000000) stop("Too many combinations (>2B).");
+  if (n_combos_d > 2000000000) Rcpp::stop("Too many combinations (>2B).");
   int n_combos = (int)n_combos_d;
   int n_rows = data.nrow();
   int n_cols = data.ncol();
   
-  std::vector<std::chrono::high_resolution_clock::time_point> timestamps;
-  TIMESTAMP; // 1
+  std::vector<Clock::time_point> timestamps;
+  stamp(timestamps); // 1
   
   // --- DATA COMPRESSION STEP ---
   // Convert 32-bit IntegerMatrix to 8-bit vector.
@@ -367,95 +382,34 @@ List process_all_combinations_cpp_parallel_float(
   std::vector<uint8_t> packed_data(total_cells);
   pack_bytes(&data[0], packed_data.data(), total_cells);
 
-  TIMESTAMP; // 2
+  stamp(timestamps); // 2
   
   std::vector<float> results(n_combos);
-  
-  auto start_time = std::chrono::high_resolution_clock::now();
-  
-  // --- DISPATCHER ---
-  // Create the correct worker type based on na_rm
-  // This enables the "Templated Worker" optimization
-  
-  if (na_rm) {
-    ComboWorker<true> worker(packed_data, target, n_items, num_choose_from, results);
-    
-    // UI / Batch Loop (Duplicate logic, but necessary for templating)
-    if (!show_progress) {
-      parallelFor(0, n_combos, worker);
-    } else {
-      int batch_size = std::min(1000, n_combos);  // first batch only -- then sized from measured throughput to take ~TARGET_BATCH_MS
-      double last_print_ms = -MIN_UPDATE_INTERVAL_MS;
-      for (int start = 0, end = 0; start < n_combos; start = end) {
-        end = start + batch_size;
-        parallelFor(start, end, worker);
-        Rcpp::checkUserInterrupt();
-        double ms_done = std::chrono::duration<double, std::milli>(std::chrono::high_resolution_clock::now() - start_time).count();
-        batch_size = (int)std::min(std::max(end / std::max(ms_done, 1.0) * TARGET_BATCH_MS, 1000.0), (double)(n_combos - end));
 
-        // Progress Bar Update -- throttled to a real, human-perceptible
-        // refresh rate rather than redrawing on every batch boundary
-        auto now = std::chrono::high_resolution_clock::now();
-        double ms_since_start = std::chrono::duration_cast<std::chrono::milliseconds>(now - start_time).count();
-        bool is_last_batch = (end == n_combos);
-        if (ms_since_start - last_print_ms >= MIN_UPDATE_INTERVAL_MS || is_last_batch) {
-          last_print_ms = ms_since_start;
-          double seconds = std::max(ms_since_start, 1.0) / 1000.0;
-          double pct = (double)end / n_combos;
-          double speed = end / seconds;
-          double eta = (n_combos - end) / speed;
-          int filled = (int)(BAR_WIDTH * pct);
-          std::string bar = BAR_START;
-          for (int i = 0; i < BAR_WIDTH; ++i) bar += (i < filled ? BAR_FILL : BAR_EMPTY);
-          bar += BAR_END;
-          Rcpp::Rcout << "\r" << bar << " " << std::fixed << std::setprecision(0) << (pct * 100) << "%"
-                      << " | " << format_num((long long)speed) << "/s"
-                      << " | ETA: " << format_time(eta) << "   " << std::flush;
-        }
-      }
-    }
-
-  } else {
-    // Exact same logic, but for the <false> template
-    ComboWorker<false> worker(packed_data, target, n_items, num_choose_from, results);
-
-    if (!show_progress) {
-      parallelFor(0, n_combos, worker);
-    } else {
-      int batch_size = std::min(1000, n_combos);  // first batch only -- then sized from measured throughput to take ~TARGET_BATCH_MS
-      double last_print_ms = -MIN_UPDATE_INTERVAL_MS;
-      for (int start = 0, end = 0; start < n_combos; start = end) {
-        end = start + batch_size;
-        parallelFor(start, end, worker);
-        Rcpp::checkUserInterrupt();
-        double ms_done = std::chrono::duration<double, std::milli>(std::chrono::high_resolution_clock::now() - start_time).count();
-        batch_size = (int)std::min(std::max(end / std::max(ms_done, 1.0) * TARGET_BATCH_MS, 1000.0), (double)(n_combos - end));
-
-        // Progress Bar Update (Code duplication unavoidable without complex wrapper)
-        auto now = std::chrono::high_resolution_clock::now();
-        double ms_since_start = std::chrono::duration_cast<std::chrono::milliseconds>(now - start_time).count();
-        bool is_last_batch = (end == n_combos);
-        if (ms_since_start - last_print_ms >= MIN_UPDATE_INTERVAL_MS || is_last_batch) {
-          last_print_ms = ms_since_start;
-          double seconds = std::max(ms_since_start, 1.0) / 1000.0;
-          double pct = (double)end / n_combos;
-          double speed = end / seconds;
-          double eta = (n_combos - end) / speed;
-          int filled = (int)(BAR_WIDTH * pct);
-          std::string bar = BAR_START;
-          for (int i = 0; i < BAR_WIDTH; ++i) bar += (i < filled ? BAR_FILL : BAR_EMPTY);
-          bar += BAR_END;
-          Rcpp::Rcout << "\r" << bar << " " << std::fixed << std::setprecision(0) << (pct * 100) << "%"
-                      << " | " << format_num((long long)speed) << "/s"
-                      << " | ETA: " << format_time(eta) << "   " << std::flush;
-        }
+  // Fixed items (the last n_fixed columns): per-row sums, counts and completeness, computed once
+  std::vector<int> base_sum, base_valid; std::vector<char> base_ok;
+  if (n_fixed > 0) {
+    base_sum.assign(n_rows, 0); base_valid.assign(n_rows, 0); base_ok.assign(n_rows, 1);
+    for (int f = 0; f < n_fixed; ++f) {
+      const uint8_t* col = packed_data.data() + (size_t)(num_choose_from + f) * n_rows;
+      for (int row = 0; row < n_rows; ++row) {
+        if (col[row] == NA_BYTE) base_ok[row] = 0; else { base_sum[row] += col[row]; ++base_valid[row]; }
       }
     }
   }
+
+  // --- DISPATCHER ---
+  // Create the correct worker type based on na_rm and fixed items
+  // This enables the "Templated Worker" optimization
+  if (na_rm) {
+    if (n_fixed > 0) run_combo_search<true, true>(packed_data, target, n_items, num_choose_from, n_fixed, base_sum, base_valid, base_ok, results, n_combos, show_progress);
+    else run_combo_search<true, false>(packed_data, target, n_items, num_choose_from, n_fixed, base_sum, base_valid, base_ok, results, n_combos, show_progress);
+  } else {
+    if (n_fixed > 0) run_combo_search<false, true>(packed_data, target, n_items, num_choose_from, n_fixed, base_sum, base_valid, base_ok, results, n_combos, show_progress);
+    else run_combo_search<false, false>(packed_data, target, n_items, num_choose_from, n_fixed, base_sum, base_valid, base_ok, results, n_combos, show_progress);
+  }
   
-  if (show_progress) Rcpp::Rcout << "\r" << std::string(80, ' ') << "\r";
-  
-  TIMESTAMP; // 3
+  stamp(timestamps); // 3
   
   // Sorting & Output -- exact parallel top-K (see parallel_top_k above)
   // instead of a single-threaded partial_sort: on large runs the old sort
@@ -463,7 +417,7 @@ List process_all_combinations_cpp_parallel_float(
   int n_top = std::min(keep_top, n_combos);
   std::vector<int> idx = parallel_top_k(results, n_combos, keep_top);
 
-  TIMESTAMP; // 4
+  stamp(timestamps); // 4
   
   CharacterVector comb_out(n_top);
   NumericVector r_out(n_top);
@@ -483,13 +437,15 @@ List process_all_combinations_cpp_parallel_float(
     idx_out[i] = combo_id;
   }
   
-  TIMESTAMP; // 5
+  stamp(timestamps); // 5
   
+  // Seconds per section (microsecond resolution: whole milliseconds rounded short sections to 0)
   NumericVector timings(timestamps.size() - 1);
   for (size_t i = 0; i < timestamps.size() - 1; i++) {
-    auto d = std::chrono::duration_cast<std::chrono::milliseconds>(timestamps[i+1] - timestamps[i]);
-    timings[i] = d.count() / 1000.0;
+    auto d = std::chrono::duration_cast<std::chrono::microseconds>(timestamps[i+1] - timestamps[i]);
+    timings[i] = d.count() / 1e6;
   }
+  timings.attr("names") = CharacterVector::create("pack", "search", "top_k", "format");
   
   return List::create(
     Named("combination") = comb_out,
@@ -500,217 +456,12 @@ List process_all_combinations_cpp_parallel_float(
 }
 
 // ============================================================================
-//  GRAM-MATRIX WORKER (Fast path: scores combinations from precomputed
-//  column moments instead of re-reading raw rows per combination)
+//  GRAM-MATRIX SEARCH (the worker and branch splitter live in gram_engine.h)
 // ============================================================================
-// Only valid when the data behind gram/col_sums/col_target_dots is complete
-// (no missingness) over the n_valid rows used to build them -- the caller
-// is responsible for imputing or excluding rows before precomputing these
-// inputs. Reproduces the same statistic ComboWorker computes on complete
-// data: with no missing values, ComboWorker's per-row score degenerates to
-// the plain sum of the k selected columns (valid_items == n_items always),
-// which is exactly what the moment decomposition below computes.
-//
-// Every combination's r depends on just two totals: T, the sum of its
-// items' covariances with the target, and Q, the sum of every pairwise
-// covariance among its items (own variances included) -- r = T / sqrt(Q *
-// var_target). The previous version rebuilt both from scratch for every
-// combination, a k x k double loop (225 lookups at k = 15), even though
-// neighbouring combinations share almost all their items.
-//
-// This version walks the combinations as a tree instead: ABCD, ABCE and
-// ABCF all hang off the same ABC branch. It keeps running T/Q subtotals for
-// the branch it's holding, plus a running tally of how much every remaining
-// item covaries with that branch as a whole -- so finishing a combination
-// (e.g. adding D to ABC) takes three lookups whatever k is:
-//   T = T_ABC + t_D,   Q = Q_ABC + C_DD + 2 * tally_D
-// Updating the tally when moving to a new branch is shared by every
-// combination under it, so the cost per combination is a small constant
-// rather than O(k^2): measured 50-78x faster at final-stage sizes (k = 9-15)
-// on real data, with identical results.
-//
-// The top-K is kept on the fly in a small per-thread min-heap (a candidate
-// only touches it when it beats the worst kept one) rather than storing
-// every combination's r first -- so memory no longer grows with the number
-// of combinations (the old results array was 4 bytes per combination) and
-// there's no 2-billion combination cap on this path. Exact ties are broken
-// towards the lexicographically smaller combination, so the kept set never
-// depends on how threads happened to split the work.
-//
-// Each item's best |r| over EVERY combination scored is also tracked on the
-// way (the best finish under a branch is credited once to that branch's
-// items), which Synergistic RFE uses to rank items directly instead of
-// reconstructing it from a truncated top-K list.
 
-struct GramDFSWorker : public Worker {
-  const std::vector<double>& C;     // p x p centered cross-products, column-major
-  const std::vector<double>& diagC; // C(j, j)
-  const std::vector<double>& t;     // centered item-target cross-products
-  const double ssy;                 // centered target sum of squares
-  const int p, k, K;
-  const std::vector<int>& task_items; // branch prefixes, flattened (variable length)
-  const std::vector<int>& task_off;   // prefix of task i is task_items[task_off[i] .. task_off[i + 1])
-
-  struct HeapEntry { double key; double r; int slot; };
-  std::vector<HeapEntry> heap;      // min-heap: front() is the worst kept entry
-  std::vector<int> slots;           // K x k item indices, one row per kept entry
-  std::vector<double> item_best;    // best key (T^2 / Q) per item (-1 = never scored)
-
-  // per-worker scratch, reused across calls
-  std::vector<double> R;            // k x p running tallies, R[d * p + j]
-  std::vector<double> T, Q;
-  std::vector<int> idx;
-
-  GramDFSWorker(const std::vector<double>& C, const std::vector<double>& diagC,
-                const std::vector<double>& t, double ssy, int p, int k, int K,
-                const std::vector<int>& task_items, const std::vector<int>& task_off)
-    : C(C), diagC(diagC), t(t), ssy(ssy), p(p), k(k), K(K), task_items(task_items), task_off(task_off),
-      slots((size_t)K * k), item_best(p, -1.0) { heap.reserve(K); }
-
-  GramDFSWorker(const GramDFSWorker& o, Split)
-    : C(o.C), diagC(o.diagC), t(o.t), ssy(o.ssy), p(o.p), k(o.k), K(o.K), task_items(o.task_items), task_off(o.task_off),
-      slots((size_t)o.K * o.k), item_best(o.p, -1.0) { heap.reserve(o.K); }
-
-  // true if (key_a, combo_a) should rank above (key_b, combo_b)
-  inline bool better(double key_a, const int* a, double key_b, const int* b) const {
-    if (key_a != key_b) return key_a > key_b;
-    for (int d = 0; d < k; ++d) if (a[d] != b[d]) return a[d] < b[d];
-    return false;
-  }
-  inline const int* combo_of(const HeapEntry& e) const { return &slots[(size_t)e.slot * k]; }
-
-  struct HeapCmp {
-    const GramDFSWorker* w;
-    bool operator()(const HeapEntry& a, const HeapEntry& b) const {
-      return w->better(a.key, w->combo_of(a), b.key, w->combo_of(b));
-    }
-  };
-
-  inline double threshold() const { return ((int)heap.size() < K) ? -2.0 : heap.front().key; }
-
-  // Offer a candidate whose items are in `cand` (length k)
-  inline void offer(double key, double r, const int* cand) {
-    HeapCmp cmp{this};
-    if ((int)heap.size() < K) {
-      int slot = (int)heap.size();
-      std::copy(cand, cand + k, slots.begin() + (size_t)slot * k);
-      heap.push_back({key, r, slot});
-      std::push_heap(heap.begin(), heap.end(), cmp);
-    } else if (better(key, cand, heap.front().key, combo_of(heap.front()))) {
-      std::pop_heap(heap.begin(), heap.end(), cmp);
-      HeapEntry& e = heap.back();
-      std::copy(cand, cand + k, slots.begin() + (size_t)e.slot * k);
-      e.key = key; e.r = r;
-      std::push_heap(heap.begin(), heap.end(), cmp);
-    }
-  }
-
-  // Extend the branch of length d by idx[d]: update T/Q and the tallies of
-  // every later item against the branch
-  inline void push(int d) {
-    const int i = idx[d];
-    T[d + 1] = T[d] + t[i];
-    Q[d + 1] = Q[d] + diagC[i] + 2.0 * R[(size_t)d * p + i];
-    const double* Ci = &C[(size_t)i * p];   // column i == row i (symmetric)
-    const double* Rd = &R[(size_t)d * p];
-    double* Rn = &R[(size_t)(d + 1) * p];
-    for (int j = i + 1; j < p; ++j) Rn[j] = Rd[j] + Ci[j];
-  }
-
-  // Branch of length k - 1 is set: finish it with every remaining item.
-  // Everything is compared on key = T^2 / Q (proportional to r^2, so it
-  // ranks by |r|), cross-multiplied so the common case -- a combination that
-  // beats neither its items' bests nor the heap -- costs no division or sqrt
-  inline void finish_branch(int start) {
-    const int d = k - 1;
-    const double Tp = T[d], Qp = Q[d];
-    const double* Rd = &R[(size_t)d * p];
-    double branch_best = -1.0;
-    double thr = threshold();
-    for (int j = start; j < p; ++j) {
-      const double Tj = Tp + t[j];
-      const double Qj = Qp + diagC[j] + 2.0 * Rd[j];
-      if (Qj > 0) {
-        const double T2 = Tj * Tj;
-        if (T2 > item_best[j] * Qj) item_best[j] = T2 / Qj;
-        if (T2 > branch_best * Qj) branch_best = T2 / Qj;
-        if (T2 >= thr * Qj) {
-          idx[d] = j;
-          offer(T2 / Qj, Tj / std::sqrt(Qj * ssy), idx.data());
-          thr = threshold();
-        }
-      } else if (thr <= -1.0) {             // invalid (zero-variance) combination:
-        idx[d] = j;                         // only kept while the heap isn't full
-        offer(-1.0, NA_REAL, idx.data());
-        thr = threshold();
-      }
-    }
-    for (int dd = 0; dd < d; ++dd) if (branch_best > item_best[idx[dd]]) item_best[idx[dd]] = branch_best;
-  }
-
-  void walk(int d, int start) {           // branch of length d is set
-    if (d == k - 1) { finish_branch(start); return; }
-    for (int i = start; i <= p - (k - d); ++i) {
-      idx[d] = i; push(d); walk(d + 1, i + 1);
-    }
-  }
-
-  void operator()(std::size_t begin, std::size_t end) {
-    if (R.empty()) {
-      R.assign((size_t)k * p, 0.0); T.assign(k + 1, 0.0); Q.assign(k + 1, 0.0); idx.assign(k, 0);
-    }
-    std::vector<int> cur(k, -1);
-    int cur_len = 0;
-    for (std::size_t task = begin; task < end; ++task) {
-      const int* pre = task_items.data() + task_off[task];
-      const int len = task_off[task + 1] - task_off[task];
-      int same = 0;                          // consecutive tasks share leading items -- reuse them
-      while (same < len && same < cur_len && cur[same] == pre[same]) ++same;
-      for (int d = same; d < len; ++d) { idx[d] = pre[d]; cur[d] = pre[d]; push(d); }
-      cur_len = len;
-      walk(len, len > 0 ? pre[len - 1] + 1 : 0);
-    }
-  }
-
-  void join(const GramDFSWorker& o) {
-    for (int j = 0; j < p; ++j) if (o.item_best[j] > item_best[j]) item_best[j] = o.item_best[j];
-    for (const HeapEntry& e : o.heap) offer(e.key, e.r, o.combo_of(e));
-  }
-};
-
-// Splits the combination tree into branches (a fixed prefix of leading
-// items plus everything below it) of at most `target` combinations, in
-// lexicographic order. Only branches still above target are split deeper, so
-// every shape -- e.g. 16 of 40, whose fixed-depth branches held up to 130M
-// combinations and left most threads idle -- gets evenly small pieces.
-// Resumable, so each batch generates only its own branches
-struct BranchGenerator {
-  const int p, k; const double target;
-  std::vector<int> cur, nxt;
-  int depth; bool done, root_pending;
-  BranchGenerator(int p, int k, double target)
-    : p(p), k(k), target(target), cur(k, 0), nxt(k + 1, 0), depth(0), done(false),
-      root_pending(k == 1 || calculate_combinations_double(p, k) <= target) {}
-  // Appends the next branch prefix to `items` and returns its size (0 = none left)
-  double next(std::vector<int>& items) {
-    if (done) return 0;
-    if (root_pending) { done = true; return calculate_combinations_double(p, k); }
-    while (depth >= 0) {
-      const int i = nxt[depth];
-      if (i > p - (k - depth)) { --depth; continue; }     // level exhausted: backtrack
-      cur[depth] = i; nxt[depth] = i + 1;
-      const double size = calculate_combinations_double(p - 1 - i, k - depth - 1);
-      if (size <= target || depth + 1 == k - 1) {
-        items.insert(items.end(), cur.begin(), cur.begin() + depth + 1);
-        return size;
-      }
-      ++depth; nxt[depth] = i + 1;                         // still too big: split deeper
-    }
-    done = true;
-    return 0;
-  }
-};
-
+// max_seconds > 0 estimates the whole search's time in about that long instead of running it (est_seconds,
+// see below; `covered`: the combinations searched on the way). screen_ratio: where the bound tests start
+// paying (see gram_engine.h; 8 times the knockout's searches of close calls)
 // [[Rcpp::export]]
 List process_all_combinations_cpp_gram(
     NumericMatrix gram,
@@ -723,14 +474,16 @@ List process_all_combinations_cpp_gram(
     int num_choose_from,
     IntegerVector original_indices,
     int keep_top = 100,
-    bool show_progress = true
+    bool show_progress = true,
+    double max_seconds = 0,
+    double screen_ratio = 4
 ) {
   const int p = num_choose_from, k = n_items;
-  if (k < 1 || k > p) stop("n_items must be between 1 and num_choose_from.");
+  if (k < 1 || k > p) Rcpp::stop("n_items must be between 1 and num_choose_from.");
   double n_combos_d = calculate_combinations_double(p, k);
 
-  std::vector<std::chrono::high_resolution_clock::time_point> timestamps;
-  TIMESTAMP; // 1
+  std::vector<Clock::time_point> timestamps;
+  stamp(timestamps); // 1
 
   // Center the moments once, so r = T / sqrt(Q * ssy) with no per-combination
   // mean corrections
@@ -753,7 +506,9 @@ List process_all_combinations_cpp_gram(
   std::vector<int> task_items, task_off;
 
   int n_top = (int)std::min((double)keep_top, n_combos_d);
-  GramDFSWorker master(C, diagC, t, ssy, p, k, n_top, task_items, task_off);
+  GramSearch search(C, diagC, t, ssy, p, k, n_top, 0, 0, screen_ratio);
+  if (search.hY > 0) gen.set_block(p - search.hY);
+  GramSearchWorker master(search, task_items, task_off);
 
   auto start_time = std::chrono::high_resolution_clock::now();
   // Work in batches of branches: lets the user interrupt, and drives the
@@ -774,8 +529,8 @@ List process_all_combinations_cpp_gram(
     }
     if (task_off.size() == 1) break;
 
-    GramDFSWorker worker(C, diagC, t, ssy, p, k, n_top, task_items, task_off);
-    parallelReduce(0, task_off.size() - 1, worker, 1);
+    GramSearchWorker worker(search, task_items, task_off);
+    par_reduce(0, task_off.size() - 1, worker, 1);
     master.join(worker);
     done += batch_combos;
     Rcpp::checkUserInterrupt();
@@ -783,6 +538,12 @@ List process_all_combinations_cpp_gram(
     auto now = std::chrono::high_resolution_clock::now();
     double ms_since_start = std::chrono::duration<double, std::milli>(now - start_time).count();
     batch_target = std::max(done / std::max(ms_since_start, 1.0) * TARGET_BATCH_MS, 1e5);
+    if (max_seconds > 0) {
+      // estimating: the first half of the time on the strongest branches, from the start (as the search
+      // itself), each batch sized to end by then
+      if (ms_since_start >= 500.0 * max_seconds) break;
+      batch_target = std::min(batch_target, std::max(done / std::max(ms_since_start, 1.0) * (500.0 * max_seconds - ms_since_start), 1e5));
+    }
 
     if (show_progress) {
       bool is_last_batch = finished || done >= n_combos_d;
@@ -805,14 +566,59 @@ List process_all_combinations_cpp_gram(
 
   if (show_progress) Rcpp::Rcout << "\r" << std::string(80, ' ') << "\r";
 
-  TIMESTAMP; // 2
+  // Estimating the whole search: the strongest branches (above) are the slowest -- the threshold is still
+  // rising and the least can be skipped -- so the rest is timed on a sample: small branches around
+  // combinations drawn evenly from those not yet covered (by rank, a fixed sequence), searched in parallel
+  // with the threshold the first half reached. Seconds = first half + the sample's time per combination x the rest
+  double est_seconds = NA_REAL;
+  if (max_seconds > 0) {
+    const double ms1 = std::max(std::chrono::duration<double, std::milli>(std::chrono::high_resolution_clock::now() - start_time).count(), 1e-3);
+    if (done >= n_combos_d) est_seconds = ms1 / 1000.0;
+    else if (k >= 2) {
+      const double rest = n_combos_d - done;
+      const double want = std::max(done / ms1 * 500.0 * max_seconds, 1e5);    // combinations the second half has time for
+      const int m = 8 * n_threads;
+      const double piece = std::min(std::max(want / m, 1e3), 5e6);
+      const int y0 = search.hY > 0 ? p - search.hY : p;
+      std::vector<int> comb(k);
+      uint64_t rng = 0x9E3779B97F4A7C15ull;
+      task_items.clear(); task_off.assign(1, 0);
+      double sampled = 0;
+      for (int s = 0; s < m; ++s) {
+        rng = rng * 6364136223846793005ull + 1442695040888963407ull;
+        double R = done + (double)(rng >> 11) * (1.0 / 9007199254740992.0) * rest;  // a rank among those left
+        int prev = -1;
+        for (int d = 0; d < k; ++d) {                       // unrank: the R-th combination in lexicographic order
+          int c = prev + 1;
+          for (; c < p - (k - d); ++c) { const double cnt = calculate_combinations_double(p - 1 - c, k - 1 - d); if (R < cnt) break; R -= cnt; }
+          comb[d] = c; prev = c;
+        }
+        for (int d = 0; d <= k - 2; ++d) {                  // the branch around it, as the splitter would cut it
+          if (d >= 1 && comb[d] >= y0) {
+            task_items.insert(task_items.end(), comb.begin(), comb.begin() + d); task_items.push_back(-(y0 + 1));
+            sampled += calculate_combinations_double(p - y0, k - d); break;
+          }
+          const double size = calculate_combinations_double(p - 1 - comb[d], k - d - 1);
+          if (size <= piece || d == k - 2) { task_items.insert(task_items.end(), comb.begin(), comb.begin() + d + 1); sampled += size; break; }
+        }
+        task_off.push_back((int)task_items.size());
+      }
+      auto t2 = std::chrono::high_resolution_clock::now();
+      GramSearchWorker worker(search, task_items, task_off);
+      par_reduce(0, task_off.size() - 1, worker, 1);
+      const double ms2 = std::chrono::duration<double, std::milli>(std::chrono::high_resolution_clock::now() - t2).count();
+      est_seconds = (ms1 + ms2 / std::max(sampled, 1.0) * rest) / 1000.0;
+    }
+  }
+
+  stamp(timestamps); // 2
 
   // Best-first order (same tie-breaking as the heap)
-  GramDFSWorker::HeapCmp cmp{&master};
-  std::vector<GramDFSWorker::HeapEntry> kept = master.heap;
+  GramSearchWorker::HeapCmp cmp{&master};
+  std::vector<GramSearchWorker::HeapEntry> kept = master.heap;
   std::sort(kept.begin(), kept.end(), cmp);
 
-  TIMESTAMP; // 3
+  stamp(timestamps); // 3
 
   n_top = (int)kept.size();
   CharacterVector comb_out(n_top);
@@ -833,23 +639,24 @@ List process_all_combinations_cpp_gram(
     idx_out[i] = rank;
   }
 
-  NumericVector item_best(p);
-  for (int j = 0; j < p; ++j) item_best[j] = master.item_best[j] < 0 ? NA_REAL : std::sqrt(master.item_best[j] / ssy);
 
-  TIMESTAMP; // 4
+  stamp(timestamps); // 4
 
+  // Seconds per section (microsecond resolution: whole milliseconds rounded short sections to 0)
   NumericVector timings(timestamps.size() - 1);
   for (size_t i = 0; i < timestamps.size() - 1; i++) {
-    auto d = std::chrono::duration_cast<std::chrono::milliseconds>(timestamps[i+1] - timestamps[i]);
-    timings[i] = d.count() / 1000.0;
+    auto d = std::chrono::duration_cast<std::chrono::microseconds>(timestamps[i+1] - timestamps[i]);
+    timings[i] = d.count() / 1e6;
   }
+  timings.attr("names") = CharacterVector::create("search", "sort", "format");
 
   return List::create(
     Named("combination") = comb_out,
     Named("r") = r_out,
     Named("combo_indices") = idx_out,
-    Named("item_best") = item_best,
-    Named("timings_cpp") = timings
+    Named("timings_cpp") = timings,
+    Named("covered") = done,
+    Named("est_seconds") = est_seconds
   );
 }
 
@@ -928,19 +735,19 @@ struct RescoreWorker : public Worker {
   const RMatrix<int> sets;     // k x n_sets, 0-based column indices
   const RVector<double> fixed_cut; // holdout scoring: each set's training cutoff (empty = search)
   const int n, k;
-  const bool na_rm, binary, search_phi, fixed;
+  const bool na_rm, binary, search_phi, fixed, int_cuts;
   RVector<double> r_out, cut_out, phi_out, youden_out, auc_out;
 
   RescoreWorker(const NumericMatrix& X, const NumericVector& y, const IntegerMatrix& sets,
-                const NumericVector& fixed_cut, bool na_rm, bool binary, bool search_phi,
+                const NumericVector& fixed_cut, bool na_rm, bool binary, bool search_phi, bool int_cuts,
                 NumericVector r_out, NumericVector cut_out, NumericVector phi_out,
                 NumericVector youden_out, NumericVector auc_out)
     : X(X), y(y), sets(sets), fixed_cut(fixed_cut), n(X.nrow()), k(sets.nrow()), na_rm(na_rm), binary(binary),
-      search_phi(search_phi), fixed(fixed_cut.length() > 0), r_out(r_out), cut_out(cut_out), phi_out(phi_out),
+      search_phi(search_phi), fixed(fixed_cut.length() > 0), int_cuts(int_cuts), r_out(r_out), cut_out(cut_out), phi_out(phi_out),
       youden_out(youden_out), auc_out(auc_out) {}
 
   void operator()(std::size_t begin, std::size_t end) {
-    std::vector<double> sum(n), score(n), pred(fixed ? n : 0), pos, neg, search;
+    std::vector<double> sum(n), score(n), pred(fixed ? n : 0), pos, neg, search, cuts;
     std::vector<int> cnt(n);
     std::vector<uint64_t> ra, rb; std::vector<uint32_t> rc;
     for (std::size_t s = begin; s < end; ++s) {
@@ -987,7 +794,15 @@ struct RescoreWorker : public Worker {
       // tie; score >= cutoff predicts 1), Youden's J / phi per cutoff, and
       // AUC (Mann-Whitney U, ties counted half). Equal Youden's J / |phi| at
       // different cutoffs is common, so near-ties (within 1e-9) count as ties
-      // and the smallest cutoff wins -- deterministic across computation paths
+      // and the smallest cutoff wins -- deterministic across computation paths.
+      // The counts change only where the cutoff passes a score, so only the
+      // first whole number past each score (and floor(min)) is tried: every
+      // other cutoff repeats the one before it, and the smallest wins ties
+      // anyway. That is the same answer, in time and memory proportional to
+      // the rows rather than to the scores' range (items in the millions
+      // made that range -- and the old per-cutoff arrays -- enormous).
+      // Without the whole-number grid (int_cuts false: standardised scores),
+      // every observed score is a cutoff -- the best of all thresholds
       pos.clear(); neg.clear();
       double lo = R_PosInf, hi = R_NegInf;
       for (int i = 0; i < n; ++i) {
@@ -1006,12 +821,18 @@ struct RescoreWorker : public Worker {
 
       auc_out[s] = auc_sorted(pos, neg);
 
-      const int n_cut = (int)(c_hi - c_lo) + 1;
+      cuts.clear(); if (int_cuts) cuts.push_back(c_lo);
+      for (size_t a = 0, b = 0; a < pos.size() || b < neg.size(); ) {   // the scores in order (both lists are sorted)
+        const double v = (b >= neg.size() || (a < pos.size() && pos[a] <= neg[b])) ? pos[a++] : neg[b++];
+        const double c = int_cuts ? std::floor(v) + 1 : v;
+        if ((!int_cuts || c <= c_hi) && (cuts.empty() || c > cuts.back())) cuts.push_back(c);
+      }
+      const int n_cut = (int)cuts.size();
       search.assign(n_cut, NA_REAL);
       std::vector<double> youden_c(n_cut), phi_c(n_cut);
       double best = R_NegInf;
       for (int c = 0, ip = 0, in = 0; c < n_cut; ++c) {
-        const double cut = c_lo + c;
+        const double cut = cuts[c];
         while (ip < (int)pos.size() && pos[ip] < cut) ++ip;
         while (in < (int)neg.size() && neg[in] < cut) ++in;
         const double tp = n_pos - ip, fp = n_neg - in, tn = n_neg - fp, fn = n_pos - tp;
@@ -1024,7 +845,7 @@ struct RescoreWorker : public Worker {
       phi_out[s] = 0;                           // (as in R when no cutoff has a defined phi)
       for (int c = 0; c < n_cut; ++c) {        // first cutoff within 1e-9 of the best
         if (!std::isnan(search[c]) && search[c] >= best - 1e-9) {
-          cut_out[s] = c_lo + c;
+          cut_out[s] = cuts[c];
           phi_out[s] = std::isnan(phi_c[c]) ? 0 : phi_c[c];
           youden_out[s] = youden_c[c];
           break;
@@ -1037,12 +858,12 @@ struct RescoreWorker : public Worker {
 // [[Rcpp::export]]
 List rescore_sets_cpp(NumericMatrix data, NumericVector target, IntegerMatrix sets,
                       bool na_rm, bool binary, bool search_phi,
-                      NumericVector fixed_cutoffs = NumericVector(0)) {
+                      NumericVector fixed_cutoffs = NumericVector(0), bool integer_cutoffs = true) {
   const int n_sets = sets.ncol();
-  if (fixed_cutoffs.length() > 0 && fixed_cutoffs.length() != n_sets) stop("fixed_cutoffs must have one cutoff per set.");
+  if (fixed_cutoffs.length() > 0 && fixed_cutoffs.length() != n_sets) Rcpp::stop("fixed_cutoffs must have one cutoff per set.");
   NumericVector r(n_sets), cutoff(n_sets), binarised_r(n_sets), youden_j(n_sets), auc(n_sets);
-  RescoreWorker worker(data, target, sets, fixed_cutoffs, na_rm, binary, search_phi, r, cutoff, binarised_r, youden_j, auc);
-  parallelFor(0, n_sets, worker, 1);
+  RescoreWorker worker(data, target, sets, fixed_cutoffs, na_rm, binary, search_phi, integer_cutoffs, r, cutoff, binarised_r, youden_j, auc);
+  par_for(0, n_sets, worker, 1);
   return List::create(Named("r") = r, Named("cutoff") = cutoff, Named("binarised_r") = binarised_r,
                       Named("youden_j") = youden_j, Named("auc") = auc);
 }

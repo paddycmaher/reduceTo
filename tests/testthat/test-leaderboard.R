@@ -36,12 +36,12 @@ test_that("leaderboard length is up to 1000 when ranking by binarised_r", {
   expect_equal(nrow(r_bin_b$leaderboard), min(1000, choose(pool, 4)))
 })
 
-test_that("$output has no padding NA rows when there are fewer combinations than n.sets", {
+test_that("$top has no padding NA rows when there are fewer combinations than n.sets", {
   set.seed(1)
   data <- as.data.frame(matrix(rnorm(200 * 4), ncol = 4))
 
   r <- reduceTo(data, n.items = 3, n.sets = 5, show.progress = FALSE)
 
-  expect_equal(nrow(r$output), choose(4, 3))
-  expect_false(anyNA(r$output$r))
+  expect_equal(nrow(r$top), choose(4, 3))
+  expect_false(anyNA(r$top$r))
 })

@@ -8,7 +8,7 @@ test_that("speed = 'fast' and 'conservative' agree on complete data", {
   r_cons <- reduceTo(data, n.items = 3, target = target, speed = "conservative", show.progress = FALSE)
 
   expect_equal(r_fast$r, r_cons$r)
-  expect_equal(r_fast$best_names, r_cons$best_names)
+  expect_equal(r_fast$selected$items, r_cons$selected$items)
 })
 
 test_that("speed = 'fast' reports the true pairwise-deletion r under missing data, not an imputed approximation", {

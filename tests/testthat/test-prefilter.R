@@ -7,11 +7,16 @@ test_that("prefilter narrows the pool to strongly-correlated items", {
   data <- as.data.frame(cbind(strong, noise))
   colnames(data) <- c(paste0("Strong_", 1:4), paste0("Noise_", 1:20))
 
-  r <- reduceTo(data, n.items = 3, target = target, ceiling = 50,
+  # 4 survivors, enough for 2 items: prefiltering alone brings the search
+  # under ceiling, so the rest is exhaustive (but not over the whole pool)
+  r <- reduceTo(data, n.items = 2, target = target, ceiling = 50,
                prefilter.ratio = 5, show.progress = FALSE)
 
-  expect_true(length(r$final_pool_items) < 24)
-  expect_true(all(grepl("Strong", r$best_names)))
+  expect_true(length(r$pool$searched) < 24)
+  expect_true(all(grepl("Strong", r$selected$items)))
+  expect_identical(r$search$type, "optimised")
+  expect_null(r$search$searches)
+  expect_output(print(r), "Search: optimised")
 })
 
 test_that("prefilter never prunes below n.items columns (safety floor)", {
@@ -43,6 +48,15 @@ test_that("prefilter.ratio = Inf and NULL both skip the prefilter step", {
   )
 })
 
+test_that("the prefilter is off by default", {
+  set.seed(3)
+  n <- 500
+  strong <- matrix(rnorm(n * 4), ncol = 4)
+  target <- rowMeans(strong) + rnorm(n, 0, 0.3)
+  data <- as.data.frame(cbind(strong, matrix(rnorm(n * 20), ncol = 20)))
+  expect_no_message(reduceTo(data, n.items = 2, target = target, ceiling = 50, show.progress = FALSE), message = "Prefilter")
+})
+
 test_that("prefilter stands aside when fewer than twice n.items items would survive", {
   set.seed(3)
   n <- 500
@@ -53,6 +67,6 @@ test_that("prefilter stands aside when fewer than twice n.items items would surv
 
   # 4 survivors: enough to prefilter for 2 items, but choosing 3 of 4 would
   # leave the answer to single-item relevance alone
-  expect_message(reduceTo(data, n.items = 2, target = target, ceiling = 50, show.progress = FALSE), "Prefilter")
-  expect_no_message(reduceTo(data, n.items = 3, target = target, ceiling = 50, show.progress = FALSE), message = "Prefilter")
+  expect_message(reduceTo(data, n.items = 2, target = target, ceiling = 50, prefilter.ratio = 5, show.progress = FALSE), "Prefilter")
+  expect_no_message(reduceTo(data, n.items = 3, target = target, ceiling = 50, prefilter.ratio = 5, show.progress = FALSE), message = "Prefilter")
 })

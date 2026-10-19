@@ -1,4 +1,4 @@
-test_that("progressive narrowing matches true exhaustive search (speed = 'fast')", {
+test_that("the knockout search matches true exhaustive search (speed = 'fast')", {
   set.seed(1)
   n <- 300; pool <- 18
   data <- as.data.frame(matrix(rnorm(n * pool), ncol = pool))
@@ -11,10 +11,10 @@ test_that("progressive narrowing matches true exhaustive search (speed = 'fast')
                       ceiling = choose(pool, 4) + 1, show.progress = FALSE)
 
   expect_equal(r_prog$r, r_truth$r, tolerance = 1e-6)
-  expect_equal(sort(r_prog$best_names), sort(r_truth$best_names))
+  expect_equal(sort(r_prog$selected$items), sort(r_truth$selected$items))
 })
 
-test_that("progressive narrowing matches true exhaustive search (speed = 'conservative')", {
+test_that("the knockout search matches true exhaustive search (speed = 'conservative')", {
   set.seed(1)
   n <- 300; pool <- 18
   data <- as.data.frame(matrix(rnorm(n * pool), ncol = pool))
@@ -27,10 +27,10 @@ test_that("progressive narrowing matches true exhaustive search (speed = 'conser
                       ceiling = choose(pool, 4) + 1, show.progress = FALSE)
 
   expect_equal(r_prog$r, r_truth$r, tolerance = 1e-6)
-  expect_equal(sort(r_prog$best_names), sort(r_truth$best_names))
+  expect_equal(sort(r_prog$selected$items), sort(r_truth$selected$items))
 })
 
-test_that("progressive narrowing is the default optimise method", {
+test_that("the knockout search is the default optimise method", {
   set.seed(1)
   data <- as.data.frame(matrix(rnorm(200 * 10), ncol = 10))
   colnames(data) <- paste0("Item_", 1:10)
@@ -41,7 +41,7 @@ test_that("progressive narrowing is the default optimise method", {
   )
 })
 
-test_that("progressive narrowing never narrows the pool below n.items", {
+test_that("the knockout search never shrinks the pool below n.items", {
   set.seed(1)
   n <- 300; pool <- 15
   data <- as.data.frame(matrix(rnorm(n * pool), ncol = pool))
@@ -49,11 +49,11 @@ test_that("progressive narrowing never narrows the pool below n.items", {
 
   r <- reduceTo(data, n.items = 5, ceiling = 3, optimise = TRUE, show.progress = FALSE)
 
-  expect_true(length(r$final_pool_items) >= 5)
-  expect_length(r$best_names, 5)
+  expect_true(length(r$pool$searched) >= 5)
+  expect_length(r$selected$items, 5)
 })
 
-test_that("progressive narrowing recovers a synergistic/suppressor item set", {
+test_that("the knockout search recovers a synergistic/suppressor item set", {
   # X1-3 and Y1-3 individually correlate weakly with the target (a shared bias
   # W dominates), but together cancel W and jointly predict it well; D items
   # are moderate, honest distractors. A method that only looks at items in
@@ -79,7 +79,7 @@ test_that("progressive narrowing recovers a synergistic/suppressor item set", {
   r <- reduceTo(data, n.items = 6, target = target, ceiling = 50,
                optimise = TRUE, show.progress = FALSE)
 
-  n_xy <- sum(grepl("^[XY]", r$best_names))
+  n_xy <- sum(grepl("^[XY]", r$selected$items))
   expect_true(n_xy >= 4)
 })
 
@@ -109,6 +109,6 @@ test_that("a higher-order (3-group) suppressor structure needs a generous ceilin
   r <- reduceTo(data, n.items = 7, target = target, ceiling = 5000000,
                optimise = TRUE, show.progress = FALSE)
 
-  n_abc <- sum(grepl("^[ABC]", r$best_names))
+  n_abc <- sum(grepl("^[ABC]", r$selected$items))
   expect_true(n_abc >= 5)
 })

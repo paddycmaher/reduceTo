@@ -42,3 +42,18 @@ test_that("reduceTo() leaves no RNG seed behind in a fresh session that had none
   # were identical (the set.seed(1) stream)
   expect_false(exists(".Random.seed", envir = globalenv()))
 })
+
+test_that("seed sets the cross-validation split; seed = NULL draws from the session's random state", {
+  set.seed(7); n <- 300; f <- rnorm(n)
+  d <- as.data.frame(sapply(1:8, function(j) runif(1, .3, .8) * f + rnorm(n)))
+  q <- function(...) reduceTo(d, 3, cross.validate = TRUE, show.progress = FALSE, verbose = FALSE, ...)
+  a <- q(); b <- q(seed = 1); c2 <- q(seed = 2)
+  expect_identical(a$r_holdout, b$r_holdout)                      # the default is seed = 1
+  expect_false(identical(a$r_holdout, c2$r_holdout))
+  expect_identical(a$settings$seed, 1)
+  set.seed(11); n1 <- q(seed = NULL); x1 <- runif(1)
+  set.seed(11); n2 <- q(seed = NULL); x2 <- runif(1)
+  expect_identical(n1$r_holdout, n2$r_holdout)                    # the same session state, the same split
+  set.seed(11); y <- runif(1); expect_false(identical(x1, y))     # and the session's state moved on
+  expect_error(q(seed = "a"), "seed")
+})

@@ -8,23 +8,23 @@ reduceTo(
   data,
   n.items,
   target = NULL,
+  method = NULL,
+  cross.validate = 0,
   n.sets = 5,
   item.names = FALSE,
   r.sq = FALSE,
   generate = TRUE,
   item.set = 1,
-  show.progress = TRUE,
-  cross.validate = 0,
-  optimise = TRUE,
-  prefilter.ratio = 5,
-  opt.n = 20000,
-  ceiling = 1e+08,
-  rfe.budget = 1e+08,
-  scale.vars = FALSE,
   na.rm = TRUE,
-  method = NULL,
+  scale.vars = FALSE,
   speed = c("fast", "conservative"),
-  verbose = TRUE
+  ceiling = 1e+12,
+  optimise = NULL,
+  knockout.budget = NULL,
+  prefilter.ratio = Inf,
+  verbose = TRUE,
+  show.progress = TRUE,
+  seed = 1
 )
 }
 \arguments{
@@ -33,8 +33,16 @@ reduceTo(
 \item{n.items}{Desired number of items in the final short-form scale}
 
 \item{target}{Optional target criterion. Can be specified as: NULL (default) for
-internal consistency, an unquoted column name from data, or an external vector
+internal consistency, a column name from data (quoted or not), or an external vector
 (numeric criterion or binary 0/1 for classification)}
+
+\item{method}{Metric for ranking combinations (default: NULL for auto-selection):
+"r" for Pearson correlation, "youden_j" for Youden's Index, "binarised_r"
+for correlation of binarised sum score, or "auc" for the area under the
+ROC curve (binary targets only; ignored otherwise)}
+
+\item{cross.validate}{Numeric input controlling a data split into Training/Holdout
+sets; if TRUE or 1, uses a 75\%/25\% split (default: FALSE)}
 
 \item{n.sets}{Number of top-performing item sets to return (default: 5)}
 
@@ -46,87 +54,111 @@ internal consistency, an unquoted column name from data, or an external vector
 
 \item{item.set}{Which ranked set to generate scores for, used with generate = TRUE (default: 1)}
 
-\item{show.progress}{If TRUE, displays a live progress bar during search (default: TRUE)}
-
-\item{cross.validate}{Numeric input controlling a data split into Training/Holdout
-sets; if TRUE or 1, uses a 75\%/25\% split (default: FALSE)}
-
-\item{optimise}{If TRUE (default), runs the Synergistic RFE optimisation algorithm
-when combinations exceed \code{ceiling} -- exhaustively scoring small-k combinations
-and progressively narrowing the item pool, keeping the items with the best achieved
-score at each step. When keeping more than half the pool (e.g. 50 of 60), it works
-from the other side: scoring the scale with small-k sets of items removed, and keeping
-outright the items whose removal always hurts. The best sets found are then polished
-by swapping 1 or 2 items with any item in the pool (recovering items that narrowing
-removed), and by deterministic escapes that strip opposite ends of the item residuals'
-main directions together and rebuild. If FALSE, forces exhaustive search regardless
-of \code{ceiling} (can be slow)}
-
-\item{prefilter.ratio}{Drops items whose relevance (correlation with the target, or
-item-total centrality with no target) is more than \code{prefilter.ratio} times
-weaker than the strongest item, before optimisation runs. Only applies when at least
-twice \code{n.items} items survive, so the search still has real choices left. Set to
-\code{Inf} or \code{NULL} to disable (default: 5)}
-
-\item{opt.n}{The maximum number of cases (rows) to subsample during heuristic
-optimisation (default: 20000). Raising this improves both average recovered
-r and run-to-run consistency at negligible time cost, since the optimisation
-stage's cost is typically dominated by \code{ceiling}/\code{rfe.budget}
-rather than row count}
-
-\item{ceiling}{Combination threshold triggering optimisation (default: 100,000,000;
-10,000,000 with \code{speed = "conservative"}).
-A tighter ceiling narrows the item pool further before the final exhaustive search,
-which is faster but leaves less room to recover from an imperfect ranking. In
-testing, Synergistic RFE reliably found the true optimum except in
-extreme scenarios -- e.g. items whose value is invisible until combined with several
-(3+) specific others; a more generous ceiling protects against this rare case}
-
-\item{rfe.budget}{Combination threshold per intermediate Synergistic RFE round
-(default: 100,000,000; 10,000,000 with \code{speed = "conservative"}), as opposed
-to \code{ceiling}, which bounds only the
-final search. Raising it lets each narrowing round exhaustively score a larger
-slice of the pool before dropping items, which can recover items that a
-tighter round would have pruned too early -- at a real, roughly linear time
-cost per round. Empirically, gains taper off well before \code{ceiling}-scale
-values; raising it far beyond the default is rarely worth the extra time}
-
-\item{scale.vars}{If TRUE, mean-centers and scales all columns, using the training
-rows' means/SDs when cross-validating (default: FALSE)}
-
 \item{na.rm}{If TRUE, handles missing values via pairwise deletion (default: TRUE)}
 
-\item{method}{Metric for ranking combinations (default: NULL for auto-selection):
-"r" for Pearson correlation, "youden_j" for Youden's Index, "binarised_r"
-for correlation of binarised sum score, or "auc" for the area under the
-ROC curve (binary targets only; ignored otherwise)}
+\item{scale.vars}{If TRUE, mean-centers and scales all columns, using the training
+rows' means/SDs when cross-validating (default: FALSE). With a binary target, the cutoff
+can then be any value of the (standardised) sum score, not just a whole number}
 
 \item{speed}{\code{"fast"} (default) scores combinations using a Gram-matrix
 shortcut, mean-imputing missing values for search only -- reported statistics are
 always recomputed from the true data. \code{"conservative"} scores every
 combination directly with pairwise deletion: no imputation, but slower (so its
-\code{ceiling} and \code{rfe.budget} defaults are 10x tighter). Recommended when
+\code{ceiling} default is much tighter). Recommended when
 \code{na.rm = FALSE} and the data have substantial or patterned missingness (e.g.
 whole sections skipped), where each combination is scored on its own complete cases
-and mean-imputed search can miss the best set}
+and mean-imputed search can miss the best set. When combinations exceed \code{ceiling},
+the knockout search always uses the Gram-matrix shortcut; \code{"conservative"} then also scores
+every combination of the final round's closest calls directly with pairwise deletion}
+
+\item{ceiling}{Combination threshold triggering optimisation (default: 1,000,000,000,000;
+10,000,000 with \code{speed = "conservative"}). Each of the knockout search's exhaustive searches
+scores at most \code{knockout.budget} combinations (\code{ceiling / 1000} unless set); a run typically takes a few to
+converge, then one or two for each item knocked out (about 28 on the test problems).
+In testing on 765 problems needing a knockout search with searches of up to 10,000,000 combinations,
+it ranked the true best set first in all of them and recovered 99.9\% of the exhaustive top 50 sets}
+
+\item{optimise}{If NULL (default), runs a knockout search when combinations exceed
+\code{ceiling}; if TRUE, runs one for any problem, however small; if FALSE, forces exhaustive
+search regardless of \code{ceiling} (can be slow). The knockout search, starting from the full scale,
+repeatedly drops the item whose loss
+lowers r least until \code{n.items} remain. It then finds the closest calls: items whose
+swap into or out of this set, alone or with one other swap, would lower r least, and
+scores every combination of as many of them as \code{knockout.budget} allows, holding the
+other items fixed, repeating from any better set found. It then does the same with each
+item of the best set left out in turn (Leave One Candidate Out, LOCO) -- or, when at
+least 20 items are left out of the set, with each of those put back in turn. Finally, all of this runs again at a
+tenth of \code{knockout.budget}, a hundredth, and so on down to 1 (the sweepdown), and the best set from any of
+them is kept: larger budgets take bigger steps and can settle on a different near-equal best set, so without
+this a larger budget could occasionally return a worse one; with it, ten times the budget never does. Most of
+the smaller searches are read off the larger ones', adding up to about 15\% to the search time. The best sets
+found make up the leaderboard, re-scored exactly}
+
+\item{knockout.budget}{The most combinations each of the knockout search's searches may score
+(default: NULL, which uses \code{ceiling / 1000}). The search also runs at a tenth of it, a hundredth, and so
+on (see \code{optimise})}
+
+\item{prefilter.ratio}{Drops items whose relevance (correlation with the target, or
+item-total centrality with no target) is more than \code{prefilter.ratio} times
+weaker than the strongest item, before the knockout search runs. Only applies when at least
+twice \code{n.items} items survive. Off by default (\code{Inf}): the knockout search handles weak
+items itself, and items that look weak alone can balance others -- in testing, a ratio
+of 5 removed an item of the true best set in about 1 in 10 problems needing a knockout search.
+Set e.g. 5 to speed up very large pools (default: Inf)}
 
 \item{verbose}{If TRUE, prints informational messages (default: TRUE). Progress
 bars and optimisation-stage updates are controlled separately by \code{show.progress}}
+
+\item{show.progress}{If TRUE, displays a live progress bar during search (default: TRUE)}
+
+\item{seed}{Random seed for the cross-validation split, and for the 10,000-row subsample used for
+the item-target correlations when there are more rows (default: 1, so a run can be repeated exactly;
+the caller's random state is restored afterwards). \code{NULL} draws from the session's random
+state instead (advancing it, like \code{sample()})}
 }
 \value{
-A list of class \code{reduced_scale} containing:
+A list of class \code{reduced_scale}. Statistics describe the selected set (rank
+\code{item.set}) on the rows the search used -- the training rows when cross-validating:
 \describe{
-\item{output}{Data frame of the top n.sets combinations and their performance metrics}
-\item{leaderboard}{Extended data frame of the top combinations (100, or 1000 when ranking by Youden's J, AUC or binarised r)}
-\item{best_names}{Character vector of item names in the top-ranked set}
-\item{best_indices}{Integer vector of column indices in the top-ranked set}
-\item{scores}{(If generate = TRUE) A data frame containing the sum scores}
-\item{binary_info}{(If binary target) A list containing optimal cutoffs and classification metrics}
-\item{search}{List: \code{type} ("exhaustive", the guaranteed best set, or "optimised",
-heuristic), \code{combinations} (possible sets), \code{searched} (sets scored by the
-final exhaustive search) and, when optimised, \code{polish} (best r before and after
-polishing, and the items swapped in and out)}
-\item{params}{Named vector of parameters used in the function call}
+\item{r}{Correlation of the selected set's sum score with the target}
+\item{binarised_r, youden_j, auc, cutoff}{Binary targets: classification metrics and the
+sum-score cutoff (\code{>=}); NA otherwise}
+\item{r_holdout}{Cross-validated: r on the holdout rows; NA otherwise}
+\item{alpha}{Cronbach's alpha of the selected set, as scored}
+\item{r_parent}{Correlation of the selected set's sum score with the full scale's (every
+valid item, keyed as in the search)}
+\item{selected}{The selected set: \code{rank}, \code{items} (names), \code{indices}
+(column numbers), \code{item_r} (each item's correlation with the target, in its
+original direction) and \code{keys} (-1 for reverse-keyed items)}
+\item{top}{Data frame of the top \code{n.sets} combinations and their metrics}
+\item{leaderboard}{The same for the top 100 (1000 when ranking by Youden's J, AUC or
+binarised r)}
+\item{item_r}{List of item-target correlations, one named vector per leaderboard row}
+\item{item_stats}{Data frame for the selected items as scored (reverse-keyed items reversed,
+standardised if \code{scale.vars}): \code{key}, \code{mean}, \code{sd}, \code{r_target},
+\code{r_rest} (with the sum of the other selected items) and \code{alpha_if_deleted}}
+\item{scores}{(If \code{generate = TRUE}) the selected set's sum scores (and, for binary
+targets, whether each meets the cutoff), for every row}
+\item{target}{The target used, for every row (the full scale's mean when no target is given)}
+\item{pool}{Item names: \code{original} (every column), \code{valid} (usable items) and
+\code{searched} (the pool searched, after any prefilter)}
+\item{pivoting_item}{With no target: the most central item, which sets the direction of
+reverse keying; NA otherwise}
+\item{n}{Rows: \code{total}, \code{train} and \code{holdout}}
+\item{search}{\code{type} ("exhaustive", the guaranteed best set, or "optimised",
+heuristic), \code{combinations} (possible sets), \code{searched} (sets scored by
+exhaustive searches in all) and, when optimised, \code{searches} (one row per search:
+its phase, its budget, the item left out or put back, open items, how many of them are chosen, kept
+items, combinations, the r of its centre, the best r it had found, and its seconds) and
+\code{loco} (one row per LOCO candidate: the best r found with it left out or put back,
+and how many searches that took)}
+\item{binary}{(Binary targets) \code{cutoff}, \code{metric}, \code{cross_validated}, and
+the metrics as \code{results}, or \code{train} and \code{holdout}}
+\item{settings}{Named list of the arguments used (and the resolved \code{ranking_metric})}
+\item{call, version, seconds}{The call, the package version (\code{"sourced"} when loaded
+with \code{source()}), and the run's total seconds}
+\item{timings}{\code{steps} (seconds per step of the run) and \code{engine} (the C++
+engine's own sections, a breakdown of the \code{search} step)}
 }
 }
 \description{
@@ -140,12 +172,13 @@ millions of combinations in seconds.
 \strong{Key Features:}
 \itemize{
 \item \strong{Combinatorial Search}: Exhaustively scores item subsets to guarantee finding the best-performing item set within the search space.
-\item \strong{Heuristic Optimisation}: When the number of combinations exceeds the computational ceiling, the function automatically reduces the item pool using Synergy-Ranked Recursive Feature Elimination before searching.
+\item \strong{Knockout Search}: When the number of combinations exceeds the computational ceiling, the function trims the scale, exhaustively searches the item choices that are closest calls around the best short form found, then knocks out each of its items in turn and searches again without it -- Leave One Candidate Out, LOCO (see \code{optimise}).
 \item \strong{Cross-Validation}: Supports a Train/Holdout split (default 75/25) to validate findings and prevent overfitting. Reports performance metrics for both the training and holdout samples side-by-side.
-\item \strong{Binary Classifications}: For binary targets (0/1), automatically finds the optimal integer cut-off score to maximise classification accuracy (Youden's J) or binarised correlation. AUC (threshold-independent) is also reported.
+\item \strong{Binary Classifications}: For binary targets (0/1), automatically finds the optimal cut-off score (a whole number of points, or with \code{scale.vars = TRUE} any value) to maximise classification accuracy (Youden's J) or binarised correlation. AUC (threshold-independent) is also reported.
 }
 }
 \examples{
+\dontshow{RcppParallel::setThreadOptions(numThreads = 2)}
 \donttest{
 # Create a simple simulated dataset
 set.seed(123)
@@ -161,6 +194,7 @@ target <- ifelse(rowMeans(data) > 0, 1, 0)
 results_binary <- reduceTo(data, n.items = 3, target = target, cross.validate = TRUE)
 print(results_binary)
 }
+\dontshow{RcppParallel::setThreadOptions(numThreads = "auto")}
 }
 \author{
 Paddy Maher, Max Planck Institute for Human Development, MPRG Biosocial

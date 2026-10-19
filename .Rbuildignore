@@ -3,3 +3,6 @@
 ^dev$
 ^local_test\.R$
 ^function archives$
+^LICENSE\.md$
+^cran-comments\.md$
+\.DS_Store$

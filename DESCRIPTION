@@ -1,21 +1,36 @@
 Package: reduceTo
-Title: An R function for optimal short-scale derivation
-Version: 1.4.0
-Author: Paddy Maher
-Description: A function to find the optimal subset of items for a short-form scale by systematically evaluating all combinations against a criterion.
-License: MIT
+Title: Optimal Short-Form Scale Derivation
+Version: 1.7.3
+Authors@R:
+    person("Paddy", "Maher", email = "paddycarstenmaher@gmail.com", role = c("aut", "cre"))
+Description: Finds the subset of items that makes the best short form of a
+    scale: the one whose sum score correlates most strongly with the full
+    scale, with an external criterion, or that best classifies a binary
+    outcome (by Youden's J, the area under the ROC curve or a binarised
+    correlation). Every combination of items is scored when that is feasible,
+    by a parallel C++ engine that skips combinations which provably cannot
+    reach the top; larger problems use a knockout search, which trims the
+    scale, exhaustively searches the closest calls around the best short form
+    found, and repeats the search with each of its items left out. Handles
+    missing data, reverse-keyed items and cross-validation.
+License: MIT + file LICENSE
+URL: https://github.com/paddycmaher/reduceTo
+BugReports: https://github.com/paddycmaher/reduceTo/issues
 Encoding: UTF-8
 Roxygen: list(markdown = TRUE)
 RoxygenNote: 8.0.0
+Depends:
+    R (>= 4.0.0)
 Imports:
     Rcpp,
-    RcppParallel,
+    RcppParallel (>= 5.1.4),
     stats,
     utils
-SystemRequirements: GNU make
+SystemRequirements: GNU make, C++17
 LinkingTo:
     Rcpp,
-    RcppParallel
-Suggests: 
+    RcppParallel (>= 5.1.4)
+Suggests:
+    parallel,
     testthat (>= 3.0.0)
 Config/testthat/edition: 3

@@ -70,5 +70,22 @@ test_that("cross-validation works with n.items = 1", {
   set.seed(1)
   data <- as.data.frame(matrix(rnorm(400 * 6), 400))
   r <- reduceTo(data, n.items = 1, cross.validate = TRUE, show.progress = FALSE, verbose = FALSE)
-  expect_false(is.na(r$output$r_holdout[1]))
+  expect_false(is.na(r$top$r_holdout[1]))
+})
+
+test_that("the binary cutoff search handles items on any scale, as on the whole-number grid", {
+  set.seed(8); n <- 600; f <- rnorm(n)
+  X <- sapply(1:6, function(j) round(3 + runif(1, .4, .9) * f + rnorm(n)))
+  y <- as.numeric(f + rnorm(n) > 0.3)
+  sets <- matrix(as.integer(combn(6, 3) - 1L), nrow = 3)
+  # every whole-number cutoff from floor(min) to ceiling(max), tried one by one (score >= cutoff predicts 1)
+  brute <- function(Xs) apply(sets, 2, function(s) {
+    sc <- rowSums(Xs[, s + 1L]); cuts <- floor(min(sc)):ceiling(max(sc))
+    max(sapply(cuts, function(c) mean(sc[y == 1] >= c) + mean(sc[y == 0] < c) - 1)) })
+  got <- reduceTo:::rescore_sets_cpp(X, y, sets, TRUE, TRUE, FALSE)
+  expect_equal(got$youden_j, brute(X), tolerance = 1e-12)
+  # items in the tens of millions: the same search (only where the counts change), quickly and in little memory
+  big <- reduceTo:::rescore_sets_cpp(X * 1e7 + 0.5, y, sets, TRUE, TRUE, FALSE)
+  expect_equal(big$youden_j, got$youden_j, tolerance = 1e-12)
+  expect_equal(big$auc, got$auc, tolerance = 1e-12)
 })

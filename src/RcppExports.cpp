@@ -11,8 +11,8 @@ Rcpp::Rostream<false>& Rcpp::Rcerr = Rcpp::Rcpp_cerr_get();
 #endif
 
 // process_all_combinations_cpp_parallel_float
-List process_all_combinations_cpp_parallel_float(IntegerMatrix data, int n_items, int num_choose_from, bool na_rm, NumericVector target, IntegerVector original_indices, int keep_top, bool show_progress);
-RcppExport SEXP _reduceTo_process_all_combinations_cpp_parallel_float(SEXP dataSEXP, SEXP n_itemsSEXP, SEXP num_choose_fromSEXP, SEXP na_rmSEXP, SEXP targetSEXP, SEXP original_indicesSEXP, SEXP keep_topSEXP, SEXP show_progressSEXP) {
+List process_all_combinations_cpp_parallel_float(IntegerMatrix data, int n_items, int num_choose_from, bool na_rm, NumericVector target, IntegerVector original_indices, int keep_top, bool show_progress, int n_fixed);
+RcppExport SEXP _reduceTo_process_all_combinations_cpp_parallel_float(SEXP dataSEXP, SEXP n_itemsSEXP, SEXP num_choose_fromSEXP, SEXP na_rmSEXP, SEXP targetSEXP, SEXP original_indicesSEXP, SEXP keep_topSEXP, SEXP show_progressSEXP, SEXP n_fixedSEXP) {
 BEGIN_RCPP
     Rcpp::RObject rcpp_result_gen;
     Rcpp::RNGScope rcpp_rngScope_gen;
@@ -24,13 +24,14 @@ BEGIN_RCPP
     Rcpp::traits::input_parameter< IntegerVector >::type original_indices(original_indicesSEXP);
     Rcpp::traits::input_parameter< int >::type keep_top(keep_topSEXP);
     Rcpp::traits::input_parameter< bool >::type show_progress(show_progressSEXP);
-    rcpp_result_gen = Rcpp::wrap(process_all_combinations_cpp_parallel_float(data, n_items, num_choose_from, na_rm, target, original_indices, keep_top, show_progress));
+    Rcpp::traits::input_parameter< int >::type n_fixed(n_fixedSEXP);
+    rcpp_result_gen = Rcpp::wrap(process_all_combinations_cpp_parallel_float(data, n_items, num_choose_from, na_rm, target, original_indices, keep_top, show_progress, n_fixed));
     return rcpp_result_gen;
 END_RCPP
 }
 // process_all_combinations_cpp_gram
-List process_all_combinations_cpp_gram(NumericMatrix gram, NumericVector col_sums, NumericVector col_target_dots, double sum_target, double sum_target_sq, double n_valid, int n_items, int num_choose_from, IntegerVector original_indices, int keep_top, bool show_progress);
-RcppExport SEXP _reduceTo_process_all_combinations_cpp_gram(SEXP gramSEXP, SEXP col_sumsSEXP, SEXP col_target_dotsSEXP, SEXP sum_targetSEXP, SEXP sum_target_sqSEXP, SEXP n_validSEXP, SEXP n_itemsSEXP, SEXP num_choose_fromSEXP, SEXP original_indicesSEXP, SEXP keep_topSEXP, SEXP show_progressSEXP) {
+List process_all_combinations_cpp_gram(NumericMatrix gram, NumericVector col_sums, NumericVector col_target_dots, double sum_target, double sum_target_sq, double n_valid, int n_items, int num_choose_from, IntegerVector original_indices, int keep_top, bool show_progress, double max_seconds, double screen_ratio);
+RcppExport SEXP _reduceTo_process_all_combinations_cpp_gram(SEXP gramSEXP, SEXP col_sumsSEXP, SEXP col_target_dotsSEXP, SEXP sum_targetSEXP, SEXP sum_target_sqSEXP, SEXP n_validSEXP, SEXP n_itemsSEXP, SEXP num_choose_fromSEXP, SEXP original_indicesSEXP, SEXP keep_topSEXP, SEXP show_progressSEXP, SEXP max_secondsSEXP, SEXP screen_ratioSEXP) {
 BEGIN_RCPP
     Rcpp::RObject rcpp_result_gen;
     Rcpp::RNGScope rcpp_rngScope_gen;
@@ -45,13 +46,15 @@ BEGIN_RCPP
     Rcpp::traits::input_parameter< IntegerVector >::type original_indices(original_indicesSEXP);
     Rcpp::traits::input_parameter< int >::type keep_top(keep_topSEXP);
     Rcpp::traits::input_parameter< bool >::type show_progress(show_progressSEXP);
-    rcpp_result_gen = Rcpp::wrap(process_all_combinations_cpp_gram(gram, col_sums, col_target_dots, sum_target, sum_target_sq, n_valid, n_items, num_choose_from, original_indices, keep_top, show_progress));
+    Rcpp::traits::input_parameter< double >::type max_seconds(max_secondsSEXP);
+    Rcpp::traits::input_parameter< double >::type screen_ratio(screen_ratioSEXP);
+    rcpp_result_gen = Rcpp::wrap(process_all_combinations_cpp_gram(gram, col_sums, col_target_dots, sum_target, sum_target_sq, n_valid, n_items, num_choose_from, original_indices, keep_top, show_progress, max_seconds, screen_ratio));
     return rcpp_result_gen;
 END_RCPP
 }
 // rescore_sets_cpp
-List rescore_sets_cpp(NumericMatrix data, NumericVector target, IntegerMatrix sets, bool na_rm, bool binary, bool search_phi, NumericVector fixed_cutoffs);
-RcppExport SEXP _reduceTo_rescore_sets_cpp(SEXP dataSEXP, SEXP targetSEXP, SEXP setsSEXP, SEXP na_rmSEXP, SEXP binarySEXP, SEXP search_phiSEXP, SEXP fixed_cutoffsSEXP) {
+List rescore_sets_cpp(NumericMatrix data, NumericVector target, IntegerMatrix sets, bool na_rm, bool binary, bool search_phi, NumericVector fixed_cutoffs, bool integer_cutoffs);
+RcppExport SEXP _reduceTo_rescore_sets_cpp(SEXP dataSEXP, SEXP targetSEXP, SEXP setsSEXP, SEXP na_rmSEXP, SEXP binarySEXP, SEXP search_phiSEXP, SEXP fixed_cutoffsSEXP, SEXP integer_cutoffsSEXP) {
 BEGIN_RCPP
     Rcpp::RObject rcpp_result_gen;
     Rcpp::RNGScope rcpp_rngScope_gen;
@@ -62,15 +65,95 @@ BEGIN_RCPP
     Rcpp::traits::input_parameter< bool >::type binary(binarySEXP);
     Rcpp::traits::input_parameter< bool >::type search_phi(search_phiSEXP);
     Rcpp::traits::input_parameter< NumericVector >::type fixed_cutoffs(fixed_cutoffsSEXP);
-    rcpp_result_gen = Rcpp::wrap(rescore_sets_cpp(data, target, sets, na_rm, binary, search_phi, fixed_cutoffs));
+    Rcpp::traits::input_parameter< bool >::type integer_cutoffs(integer_cutoffsSEXP);
+    rcpp_result_gen = Rcpp::wrap(rescore_sets_cpp(data, target, sets, na_rm, binary, search_phi, fixed_cutoffs, integer_cutoffs));
+    return rcpp_result_gen;
+END_RCPP
+}
+// gram_moments_cpp
+List gram_moments_cpp(NumericMatrix data, NumericVector target);
+RcppExport SEXP _reduceTo_gram_moments_cpp(SEXP dataSEXP, SEXP targetSEXP) {
+BEGIN_RCPP
+    Rcpp::RObject rcpp_result_gen;
+    Rcpp::RNGScope rcpp_rngScope_gen;
+    Rcpp::traits::input_parameter< NumericMatrix >::type data(dataSEXP);
+    Rcpp::traits::input_parameter< NumericVector >::type target(targetSEXP);
+    rcpp_result_gen = Rcpp::wrap(gram_moments_cpp(data, target));
+    return rcpp_result_gen;
+END_RCPP
+}
+// knockout_cpp
+List knockout_cpp(NumericMatrix C, NumericVector tt, double ssy, int n_items, double budget, int keep_top, bool show_progress, int width, int cand, int mode, int mirror_min, bool sweepdown);
+RcppExport SEXP _reduceTo_knockout_cpp(SEXP CSEXP, SEXP ttSEXP, SEXP ssySEXP, SEXP n_itemsSEXP, SEXP budgetSEXP, SEXP keep_topSEXP, SEXP show_progressSEXP, SEXP widthSEXP, SEXP candSEXP, SEXP modeSEXP, SEXP mirror_minSEXP, SEXP sweepdownSEXP) {
+BEGIN_RCPP
+    Rcpp::RObject rcpp_result_gen;
+    Rcpp::RNGScope rcpp_rngScope_gen;
+    Rcpp::traits::input_parameter< NumericMatrix >::type C(CSEXP);
+    Rcpp::traits::input_parameter< NumericVector >::type tt(ttSEXP);
+    Rcpp::traits::input_parameter< double >::type ssy(ssySEXP);
+    Rcpp::traits::input_parameter< int >::type n_items(n_itemsSEXP);
+    Rcpp::traits::input_parameter< double >::type budget(budgetSEXP);
+    Rcpp::traits::input_parameter< int >::type keep_top(keep_topSEXP);
+    Rcpp::traits::input_parameter< bool >::type show_progress(show_progressSEXP);
+    Rcpp::traits::input_parameter< int >::type width(widthSEXP);
+    Rcpp::traits::input_parameter< int >::type cand(candSEXP);
+    Rcpp::traits::input_parameter< int >::type mode(modeSEXP);
+    Rcpp::traits::input_parameter< int >::type mirror_min(mirror_minSEXP);
+    Rcpp::traits::input_parameter< bool >::type sweepdown(sweepdownSEXP);
+    rcpp_result_gen = Rcpp::wrap(knockout_cpp(C, tt, ssy, n_items, budget, keep_top, show_progress, width, cand, mode, mirror_min, sweepdown));
+    return rcpp_result_gen;
+END_RCPP
+}
+// column_scan_cpp
+List column_scan_cpp(NumericMatrix X, IntegerVector rows, IntegerVector cols);
+RcppExport SEXP _reduceTo_column_scan_cpp(SEXP XSEXP, SEXP rowsSEXP, SEXP colsSEXP) {
+BEGIN_RCPP
+    Rcpp::RObject rcpp_result_gen;
+    Rcpp::RNGScope rcpp_rngScope_gen;
+    Rcpp::traits::input_parameter< NumericMatrix >::type X(XSEXP);
+    Rcpp::traits::input_parameter< IntegerVector >::type rows(rowsSEXP);
+    Rcpp::traits::input_parameter< IntegerVector >::type cols(colsSEXP);
+    rcpp_result_gen = Rcpp::wrap(column_scan_cpp(X, rows, cols));
+    return rcpp_result_gen;
+END_RCPP
+}
+// fused_gram_cpp
+List fused_gram_cpp(NumericMatrix X, NumericVector targ, NumericVector mu, IntegerVector rows);
+RcppExport SEXP _reduceTo_fused_gram_cpp(SEXP XSEXP, SEXP targSEXP, SEXP muSEXP, SEXP rowsSEXP) {
+BEGIN_RCPP
+    Rcpp::RObject rcpp_result_gen;
+    Rcpp::RNGScope rcpp_rngScope_gen;
+    Rcpp::traits::input_parameter< NumericMatrix >::type X(XSEXP);
+    Rcpp::traits::input_parameter< NumericVector >::type targ(targSEXP);
+    Rcpp::traits::input_parameter< NumericVector >::type mu(muSEXP);
+    Rcpp::traits::input_parameter< IntegerVector >::type rows(rowsSEXP);
+    rcpp_result_gen = Rcpp::wrap(fused_gram_cpp(X, targ, mu, rows));
+    return rcpp_result_gen;
+END_RCPP
+}
+// flip_columns_cpp
+NumericMatrix flip_columns_cpp(NumericMatrix X, IntegerVector cols, NumericVector bounds);
+RcppExport SEXP _reduceTo_flip_columns_cpp(SEXP XSEXP, SEXP colsSEXP, SEXP boundsSEXP) {
+BEGIN_RCPP
+    Rcpp::RObject rcpp_result_gen;
+    Rcpp::RNGScope rcpp_rngScope_gen;
+    Rcpp::traits::input_parameter< NumericMatrix >::type X(XSEXP);
+    Rcpp::traits::input_parameter< IntegerVector >::type cols(colsSEXP);
+    Rcpp::traits::input_parameter< NumericVector >::type bounds(boundsSEXP);
+    rcpp_result_gen = Rcpp::wrap(flip_columns_cpp(X, cols, bounds));
     return rcpp_result_gen;
 END_RCPP
 }
 
 static const R_CallMethodDef CallEntries[] = {
-    {"_reduceTo_process_all_combinations_cpp_parallel_float", (DL_FUNC) &_reduceTo_process_all_combinations_cpp_parallel_float, 8},
-    {"_reduceTo_process_all_combinations_cpp_gram", (DL_FUNC) &_reduceTo_process_all_combinations_cpp_gram, 11},
-    {"_reduceTo_rescore_sets_cpp", (DL_FUNC) &_reduceTo_rescore_sets_cpp, 7},
+    {"_reduceTo_process_all_combinations_cpp_parallel_float", (DL_FUNC) &_reduceTo_process_all_combinations_cpp_parallel_float, 9},
+    {"_reduceTo_process_all_combinations_cpp_gram", (DL_FUNC) &_reduceTo_process_all_combinations_cpp_gram, 13},
+    {"_reduceTo_rescore_sets_cpp", (DL_FUNC) &_reduceTo_rescore_sets_cpp, 8},
+    {"_reduceTo_gram_moments_cpp", (DL_FUNC) &_reduceTo_gram_moments_cpp, 2},
+    {"_reduceTo_knockout_cpp", (DL_FUNC) &_reduceTo_knockout_cpp, 12},
+    {"_reduceTo_column_scan_cpp", (DL_FUNC) &_reduceTo_column_scan_cpp, 3},
+    {"_reduceTo_fused_gram_cpp", (DL_FUNC) &_reduceTo_fused_gram_cpp, 4},
+    {"_reduceTo_flip_columns_cpp", (DL_FUNC) &_reduceTo_flip_columns_cpp, 3},
     {NULL, NULL, 0}
 };
 
