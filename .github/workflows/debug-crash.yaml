@@ -19,8 +19,10 @@ jobs:
         run: |
           if command -v dnf >/dev/null; then dnf install -y gdb valgrind cmake; else apt-get update && apt-get install -y gdb valgrind cmake; fi
 
-      - name: Install dependencies
-        run: Rscript -e 'install.packages(c("Rcpp", "RcppParallel", "testthat"), repos = "https://cloud.r-project.org", Ncpus = 4)'
+      - name: Install dependencies (the container's own repos, which carry ready-built packages)
+        run: |
+          Rscript -e 'print(getOption("repos")); install.packages(c("Rcpp", "RcppParallel", "testthat"), Ncpus = 4)'
+          Rscript -e 'for (p in c("Rcpp", "RcppParallel", "testthat")) if (!requireNamespace(p, quietly = TRUE)) stop(p, " did not install")'
 
       - name: Install reduceTo with debug symbols (the container's own flags, plus -g)
         run: |
