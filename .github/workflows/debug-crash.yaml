@@ -1,28 +1,46 @@
 # One-off: reproduce the gcc15 and clang-asan crashes under gdb (and valgrind), to get C++ backtraces.
+# Dependencies are set up by R-hub's own actions, exactly as in an R-hub check.
 # Run from the Actions tab ("debug-crash" -> Run workflow); delete this file once the crash is fixed.
 name: debug-crash
 
 on: workflow_dispatch
 
 jobs:
-  crash:
+  setup:
     runs-on: ubuntu-latest
+    outputs:
+      containers: ${{ steps.rhub-setup.outputs.containers }}
+    steps:
+    - uses: r-hub/actions/setup@v1
+      with:
+        config: gcc15,clang-asan
+      id: rhub-setup
+
+  crash:
+    needs: setup
+    runs-on: ubuntu-latest
+    name: ${{ matrix.config.label }}
     strategy:
       fail-fast: false
       matrix:
-        image: [gcc15, clang-asan]
-    container: ghcr.io/r-hub/containers/${{ matrix.image }}:latest
+        config: ${{ fromJson(needs.setup.outputs.containers) }}
+    container:
+      image: ${{ matrix.config.container }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: r-hub/actions/checkout@v1
+      - uses: r-hub/actions/platform-info@v1
+        with:
+          token: ${{ secrets.RHUB_TOKEN }}
+          job-config: ${{ matrix.config.job-config }}
+      - uses: r-hub/actions/setup-deps@v1
+        with:
+          token: ${{ secrets.RHUB_TOKEN }}
+          job-config: ${{ matrix.config.job-config }}
 
-      - name: Install gdb, valgrind and cmake (RcppParallel builds TBB with cmake)
+      - name: Install gdb and valgrind
         run: |
-          if command -v dnf >/dev/null; then dnf install -y gdb valgrind cmake; else apt-get update && apt-get install -y gdb valgrind cmake; fi
-
-      - name: Install dependencies (the container's own repos, which carry ready-built packages)
-        run: |
-          Rscript -e 'print(getOption("repos")); install.packages(c("Rcpp", "RcppParallel", "testthat"), Ncpus = 4)'
-          Rscript -e 'for (p in c("Rcpp", "RcppParallel", "testthat")) if (!requireNamespace(p, quietly = TRUE)) stop(p, " did not install")'
+          if command -v dnf >/dev/null; then dnf install -y gdb valgrind; else apt-get update && apt-get install -y gdb valgrind; fi
+          Rscript -e 'for (p in c("Rcpp", "RcppParallel", "testthat")) if (!requireNamespace(p, quietly = TRUE)) stop(p, " is missing")'
 
       - name: Install reduceTo with debug symbols (the container's own flags, plus -g)
         run: |
@@ -74,5 +92,5 @@ jobs:
           cat reduceTo.Rcheck/tests/testthat.Rout.fail 2>/dev/null | tail -80 || true
 
       - name: Run under valgrind (gcc15 only)
-        if: matrix.image == 'gcc15'
+        if: contains(matrix.config.container, 'gcc15')
         run: R -d "valgrind --track-origins=yes --error-limit=no" --vanilla -f crash.R || true
