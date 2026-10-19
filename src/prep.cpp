@@ -56,7 +56,9 @@ struct ScanWorker : public Worker {
         const double v = c[rows.at(i)];
         if (std::isnan(v)) continue;
         if (std::isinf(v)) { bad = 1; continue; }
-        if (v < lo) lo = v; if (v > hi) hi = v; s += v; ++k;
+        if (v < lo) lo = v;
+        if (v > hi) hi = v;
+        s += v; ++k;
       }
       mn[q] = lo; mx[q] = hi; sm[q] = s; cnt[q] = k; inf[q] = bad;
     }

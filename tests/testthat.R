@@ -6,7 +6,9 @@
 # * https://r-pkgs.org/testing-design.html#sec-tests-files-overview
 # * https://testthat.r-lib.org/articles/special-files.html
 
-library(testthat)
-library(reduceTo)
-
-test_check("reduceTo")
+# testthat is only suggested: without it (as in CRAN's checks without suggested packages), skip the tests
+if (requireNamespace("testthat", quietly = TRUE)) {
+  library(testthat)
+  library(reduceTo)
+  test_check("reduceTo")
+}

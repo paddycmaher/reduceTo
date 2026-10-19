@@ -891,7 +891,10 @@ reduceTo <- function(data, n.items, target = NULL, method = NULL, cross.validate
 
     pivot_item <- colnames(data)[most_central_item]
 
-    items_to_flip_TF <- dc[, most_central_item] < 0
+    # Reverse-key items correlating negatively with it -- by more than rounding: an item uncorrelated with
+    # it (to within 1e-12) stays as it is, rather than flipping on the sign of rounding noise, which can
+    # differ between computers (and with it, the best set)
+    items_to_flip_TF <- dc[, most_central_item] < -1e-12
     items_to_flip_TF[is.na(items_to_flip_TF)] <- FALSE
     items_to_flip <- filtered_names[items_to_flip_TF]
 
@@ -928,7 +931,7 @@ reduceTo <- function(data, n.items, target = NULL, method = NULL, cross.validate
       filtered_names <- filtered_names[!drop_mask]
     }
 
-    items_to_flip_TF <- dc < 0
+    items_to_flip_TF <- dc < -1e-12                 # (as above: not on the sign of rounding noise)
     items_to_flip <- filtered_names[items_to_flip_TF]
 
     data <- flip_items(data, items_to_flip, train_rows)

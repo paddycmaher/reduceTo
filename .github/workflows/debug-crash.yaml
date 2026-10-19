@@ -1,0 +1,64 @@
+# One-off: reproduce the gcc15 and clang-asan crashes under gdb (and valgrind), to get C++ backtraces.
+# Run from the Actions tab ("debug-crash" -> Run workflow); delete this file once the crash is fixed.
+name: debug-crash
+
+on: workflow_dispatch
+
+jobs:
+  crash:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        image: [gcc15, clang-asan]
+    container: ghcr.io/r-hub/containers/${{ matrix.image }}:latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install gdb and valgrind
+        run: |
+          if command -v dnf >/dev/null; then dnf install -y gdb valgrind; else apt-get update && apt-get install -y gdb valgrind; fi
+
+      - name: Install dependencies
+        run: Rscript -e 'install.packages(c("Rcpp", "RcppParallel"), repos = "https://cloud.r-project.org")'
+
+      - name: Install reduceTo with debug symbols (the container's own flags, plus -g)
+        run: |
+          mkdir -p ~/.R && echo 'CXXFLAGS += -g' >> ~/.R/Makevars
+          R CMD INSTALL .
+
+      - name: Write the crashing cases
+        run: |
+          cat > crash.R <<'EOF'
+          library(reduceTo)
+          RcppParallel::setThreadOptions(numThreads = 2)
+          cat("case 1: exhaustive, 4 of 10 (crashed on clang-asan)\n")
+          set.seed(1); data <- as.data.frame(matrix(rnorm(200 * 10), ncol = 10))
+          print(reduceTo(data, n.items = 4, show.progress = FALSE, verbose = FALSE)$r)
+          cat("case 2: knockout, 20 of 24, ceiling 1e4 (crashed on gcc15)\n")
+          set.seed(4); n <- 1000; f <- rnorm(n)
+          data <- as.data.frame(sapply(1:24, function(j) runif(1, 0.2, 0.9) * f + rnorm(n)))
+          print(reduceTo(data, n.items = 20, ceiling = 10000, show.progress = FALSE, verbose = FALSE)$r)
+          cat("no crash\n")
+          EOF
+          cat > cmds.gdb <<'EOF'
+          set pagination off
+          set confirm off
+          handle SIGPIPE nostop noprint
+          run --vanilla -f crash.R
+          echo \n===== backtrace of the crashing thread =====\n
+          bt 40
+          echo \n===== registers and instructions at the crash =====\n
+          info registers rip rsp rdi rsi rax
+          x/16i $pc-32
+          echo \n===== all threads =====\n
+          thread apply all bt 12
+          quit
+          EOF
+
+      - name: Run under gdb
+        run: R -d gdb --debugger-args="-batch -x cmds.gdb" || true
+
+      - name: Run under valgrind (gcc15 only)
+        if: matrix.image == 'gcc15'
+        run: R -d "valgrind --track-origins=yes --error-limit=no" --vanilla -f crash.R || true
