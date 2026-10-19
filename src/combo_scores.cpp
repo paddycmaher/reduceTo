@@ -199,7 +199,7 @@ struct ComboWorker : public Worker {
 //  EXACT PARALLEL TOP-K SELECTION
 // ============================================================================
 // Splits the combination range into a small FIXED number of equal chunks and
-// runs them via parallelFor (the same low-overhead primitive already used
+// runs them via par_for (the same low-overhead primitive already used
 // for scoring) -- each chunk does exactly one partial_sort over its own
 // range, writing into its own pre-allocated slot (no shared state, no
 // per-split heap allocation). A final serial merge over the (small, bounded)

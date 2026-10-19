@@ -5,6 +5,9 @@
 * Works inside forked processes (`parallel::mclapply()` and the like) after the session has already run a
   search; those children used to crash. In a forked child, searches run on one thread.
 * `RcppParallel::setThreadOptions(numThreads = n)` now limits the knockout search too (it used every core).
+* Fixed two crashes seen only on some Linux builds (R-hub's gcc15 and clang-asan): the parallel loops now
+  run on TBB directly rather than through RcppParallel's compiled wrappers, and the knockout's
+  leave-one-out searches no longer start a thread of their own. Same results, same speed.
 * Searches with `speed = "conservative"` and `show.progress = FALSE` can be interrupted.
 * The binary cutoff search tries only the cutoffs where the result can change: the same answers, but fast
   and light for items on any scale (items in the millions used to need gigabytes of memory).

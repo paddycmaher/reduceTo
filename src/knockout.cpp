@@ -40,9 +40,9 @@
 #include <mutex>
 #include <condition_variable>
 #include <map>
-#include <tbb/parallel_for.h>
-#include <tbb/parallel_reduce.h>
-#include <tbb/blocked_range.h>
+#include <functional>
+#include <exception>
+#include <tbb/task_group.h>
 
 #include "gram_engine.h"
 #include "parallel_guard.h"   // parallel loops that fall back to one thread in a fork()'d child
@@ -367,21 +367,6 @@ Mom make_mom(const NumericMatrix& C, const NumericVector& tt, double ssy) {
   return M;
 }
 
-// Runs an RcppParallel-style worker (split constructor, operator()(begin, end), join) with TBB directly.
-// RcppParallel's own wrappers create and destroy a global TBB setting on every call, which aborts when
-// calls are nested inside other threads' parallel loops -- the plain TBB algorithms are made for nesting
-template <class W> struct TbbBody {
-  std::unique_ptr<W> own; W* w;
-  explicit TbbBody(W& root) : w(&root) {}
-  TbbBody(TbbBody& o, tbb::split) : own(new W(*o.w, RcppParallel::Split())), w(nullptr) { w = own.get(); }
-  void operator()(const tbb::blocked_range<std::size_t>& r) { (*w)(r.begin(), r.end()); }
-  void join(TbbBody& o) { w->join(*o.w); }
-};
-template <class W> void tbb_reduce(W& worker, std::size_t n, std::size_t grain) {
-  if (forked_child()) { if (n > 0) worker(0, n); return; }   // see parallel_guard.h
-  within_thread_limit([&] { TbbBody<W> body(worker); tbb::parallel_reduce(tbb::blocked_range<std::size_t>(0, n, std::max<std::size_t>(1, grain)), body); });
-}
-
 // ============================================================================
 //  LOCO: THE SEARCHES
 // ============================================================================
@@ -419,7 +404,7 @@ std::vector<double> flip_costs_ex(const Mom& M, const std::vector<int>& S, const
       addQ.push_back(2 * s.a[y1] + M.dC[y1] + 2 * s.a[y2] + M.dC[y2] + 2 * M.c(y1, y2));
     }
     PairSwapWorker w(M, i1, i2, j1, j2, addT, addQ, s.a, s.T, s.Q);
-    if (parallel) tbb_reduce(w, i1.size(), 200000 / std::max<size_t>(1, j1.size()));
+    if (parallel) par_reduce(0, i1.size(), w, 200000 / std::max<size_t>(1, j1.size()));
     else w(0, i1.size());
     for (int j = 0; j < p; ++j) if (w.best[j] > best[j]) best[j] = w.best[j];
   }
@@ -509,9 +494,12 @@ struct SearchCache {
   }
 };
 
+// Called between pieces of a LOCO search run on R's thread: takes interrupts and draws the progress line
+typedef std::function<void()> Poll;
+
 // Exhaustive top-K over the pool on the calling thread only (no R API, so safe inside a worker thread);
 // stops early if `cancel` is set
-SearchOut search_pool_serial(const Mom& M, const Pool& P, int K, const std::atomic<bool>* cancel) {
+SearchOut search_pool_serial(const Mom& M, const Pool& P, int K, const std::atomic<bool>* cancel, const Poll* poll = nullptr) {
   SearchOut out; const int nU = P.U.size(), j = P.j;
   if (j == 0 || j == nU) {
     std::vector<int> S = P.F; if (j == nU) S.insert(S.end(), P.U.begin(), P.U.end());
@@ -535,6 +523,7 @@ SearchOut search_pool_serial(const Mom& M, const Pool& P, int K, const std::atom
   BranchGenerator gen(nU, kk, 1e6);              // pieces of at most ~1M combinations, checking for cancellation between them
   if (search.hY > 0) gen.set_block(nU - search.hY);
   for (;;) {
+    if (poll) (*poll)();
     if (cancel && cancel->load(std::memory_order_relaxed)) break;
     task_items.clear(); task_off.assign(1, 0);
     if (gen.next(task_items) == 0) break;
@@ -554,12 +543,12 @@ SearchOut search_pool_serial(const Mom& M, const Pool& P, int K, const std::atom
 
 // Exhaustive top-K over the pool on the parallel engine without any R API calls (safe off the main thread,
 // and nestable inside a parallel loop); small pools run on the calling thread
-SearchOut search_pool_quiet(const Mom& M, const Pool& P, int K, const std::atomic<bool>* cancel) {
+SearchOut search_pool_quiet(const Mom& M, const Pool& P, int K, const std::atomic<bool>* cancel, const Poll* poll = nullptr) {
   const int nU = P.U.size(), j = P.j;
-  if (j == 0 || j == nU) return search_pool_serial(M, P, K, cancel);
+  if (j == 0 || j == nU) return search_pool_serial(M, P, K, cancel, poll);
   const int n_drop = nU - j; const bool drop = n_drop < j; const int kk = drop ? n_drop : j;
   const double n_combos = calculate_combinations_double(nU, kk);
-  if (n_combos < 2e5) return search_pool_serial(M, P, K, cancel);
+  if (n_combos < 2e5) return search_pool_serial(M, P, K, cancel, poll);
   SearchOut out; out.combos = n_combos;
   std::vector<int> base = P.F; if (drop) base.insert(base.end(), P.U.begin(), P.U.end());
   State b = state_of(M, base); const double sign = drop ? -1.0 : 1.0;
@@ -579,6 +568,7 @@ SearchOut search_pool_quiet(const Mom& M, const Pool& P, int K, const std::atomi
   GramSearchWorker master(search, task_items, task_off);
   bool finished = false;
   while (!finished) {
+    if (poll) (*poll)();
     if (cancel && cancel->load(std::memory_order_relaxed)) break;
     task_items.clear(); task_off.assign(1, 0); double batch = 0;
     while (batch < 5e7 || (int)task_off.size() - 1 < 4 * n_threads) {
@@ -588,7 +578,7 @@ SearchOut search_pool_quiet(const Mom& M, const Pool& P, int K, const std::atomi
     }
     if (task_off.size() == 1) break;
     GramSearchWorker w(search, task_items, task_off);
-    tbb_reduce(w, task_off.size() - 1, 1);
+    par_reduce(0, task_off.size() - 1, w, 1);
     master.join(w);
   }
   GramSearchWorker::HeapCmp cmp{&master};
@@ -626,17 +616,18 @@ struct JobOut { std::vector<std::vector<int>> sets; std::vector<double> keys; st
 
 // One search: closest calls around the start, repeating from any better form. `out` is banned from every form
 // (LOCO), `in` is forced into every form (LOCO on a long form: put back), both -1 for the main search.
-// Thread-safe: no R API unless inner == 2 (the main thread's parallel engine with progress)
+// Thread-safe: no R API unless inner == 2 (the main thread's parallel engine with progress) or `poll` is given (R's thread only)
 // With the caches (fc, sc), a search of a smaller budget in the sweepdown (read_off) first tries reading its best form
 // off a larger search's list
 JobOut loco_job(const Mom& M, const std::vector<int>& best, int out, int in, double budget, int K, int cand, int inner,
                const std::atomic<bool>* cancel, Progress* prog = nullptr, const std::string& head = "",
-               FlipCache* fc = nullptr, SearchCache* sc = nullptr, bool read_off = false) {
+               FlipCache* fc = nullptr, SearchCache* sc = nullptr, bool read_off = false, const Poll* poll = nullptr) {
   const bool parallel = inner > 0;
   JobOut res; std::vector<char> ban(M.p, 0), lock(M.p, 0); if (out >= 0) ban[out] = 1; if (in >= 0) lock[in] = 1;
   std::vector<int> S = out >= 0 ? refill_without(M, best, out, ban) : in >= 0 ? retrim_with(M, best, in) : best;
   Found f; f.add(M, {S}); const double rs = std::sqrt(M.ssy);
   for (int rd = 0; rd < 50; ++rd) {
+    if (poll) (*poll)();
     if (cancel && cancel->load(std::memory_order_relaxed)) break;
     auto t1 = std::chrono::steady_clock::now();
     std::vector<int> ck = sorted(S); ck.push_back(-1); ck.push_back(out); ck.push_back(in);
@@ -645,7 +636,7 @@ JobOut loco_job(const Mom& M, const std::vector<int>& best, int out, int in, dou
     std::ostringstream h; if (prog) h << head << " search " << rd + 1;
     SearchOut so;
     if (!(sc && read_off && sc->read_off(M, P, K, budget, so.sets))) {
-      so = inner == 2 ? search_pool(M, P, K, *prog, h.str()) : inner == 1 ? search_pool_quiet(M, P, K, cancel) : search_pool_serial(M, P, K, cancel);
+      so = inner == 2 ? search_pool(M, P, K, *prog, h.str()) : inner == 1 ? search_pool_quiet(M, P, K, cancel, poll) : search_pool_serial(M, P, K, cancel, poll);
       if (sc) sc->store(M, P, so.sets, K, budget);
     }
     f.add(M, so.sets);
@@ -711,51 +702,72 @@ KnockoutRun run_knockout(const Mom& M, int k, double budget, int keep_top, int c
   std::vector<JobOut> res(jobs);
   std::unique_ptr<std::atomic<int>[]> state(new std::atomic<int>[jobs]); for (int q = 0; q < jobs; ++q) state[q].store(0);
   auto t1 = std::chrono::steady_clock::now();
-  auto run_job = [&](int q, int inner, const std::atomic<bool>* cancel, Progress* pr, const std::string& head) {
+  auto run_job = [&](int q, int inner, const std::atomic<bool>* cancel, Progress* pr, const std::string& head, const Poll* poll) {
     state[q].store(1);
-    res[q] = add ? loco_job(M, best, -1, items[q], budget, keep_top, cand, inner, cancel, pr, head, fc, sc, read_off)
-                 : loco_job(M, best, items[q], -1, budget, keep_top, cand, inner, cancel, pr, head, fc, sc, read_off);
+    res[q] = add ? loco_job(M, best, -1, items[q], budget, keep_top, cand, inner, cancel, pr, head, fc, sc, read_off, poll)
+                 : loco_job(M, best, items[q], -1, budget, keep_top, cand, inner, cancel, pr, head, fc, sc, read_off, poll);
     state[q].store(2); };
   if (mode != 2 && jobs > 1 && !forked_child()) {   // (in a fork()'d child: one after another, see parallel_guard.h)
-    // In parallel: TBB spreads the searches over the threads, each also splitting across threads when large;
-    // the main thread shows how many are done and takes interrupts
-    std::atomic<int> done(0); std::atomic<bool> cancel(false), finished(false);
+    // In parallel: R's thread and TBB's each take the next search not yet taken, each search also splitting across
+    // threads when large. R's thread also shows how many are done and takes interrupts -- between pieces of its own
+    // searches, then, once none are left to take, while the last ones finish. (No thread of our own: TBB sets itself
+    // up afresh on each new thread that uses it, and doing that for every LOCO crashed some builds of TBB)
+    std::atomic<int> next(0), done(0); std::atomic<bool> cancel(false);
     std::mutex wake_mu; std::condition_variable wake;
-    std::thread driver([&]() {
-      try { within_thread_limit([&] { tbb::parallel_for(tbb::blocked_range<std::size_t>(0, jobs, 1), [&](const tbb::blocked_range<std::size_t>& r) {
-              for (std::size_t q = r.begin(); q < r.end(); ++q) { if (cancel.load()) break;
-                try { run_job(q, mode == 0 ? 0 : 1, &cancel, nullptr, ""); } catch (...) { res[q].failed = true; }
-                done.fetch_add(1); } }); }); }
-      catch (...) { cancel.store(true); }
-      { std::lock_guard<std::mutex> g(wake_mu); finished.store(true); }
-      wake.notify_all(); });
-    try {
-      for (;;) {
-        // every 5 ms, or as soon as the searches end
-        { std::unique_lock<std::mutex> lk(wake_mu); wake.wait_for(lk, std::chrono::milliseconds(5), [&] { return finished.load(); }); }
-        if (finished.load()) break;
-        Rcpp::checkUserInterrupt();
-        if (prog.on) {
-          // Candidates done, and the time left at the rate so far (searches still running count as half done)
-          const int d = done.load(); int running = 0; for (int q = 0; q < jobs; ++q) if (state[q].load() == 1) ++running;
-          const double frac = (double)d / jobs, part = d + 0.5 * running;
-          const int W = 15, filled = (int)(W * std::min(frac, 1.0));
-          std::string bar = BAR_START; for (int i = 0; i < W; ++i) bar += (i < filled ? BAR_FILL : BAR_EMPTY); bar += BAR_END;
-          std::ostringstream o; o << "~{ LOCO }~ " << d << "/" << jobs << " ";
-          const int beat = filled < W ? (int)o.tellp() + (int)std::string(BAR_START).size() + filled : -1;
-          o << bar << " " << (int)(100 * std::min(frac, 1.0)) << "% | ETA: "
-            << (d > 0 ? format_time(secs_since(t1) / part * (jobs - part)) : std::string("-"));
-          prog.line(o.str(), false, beat);
-        }
+    std::exception_ptr interrupt;
+    const std::thread::id r_thread = std::this_thread::get_id();
+    auto last = std::chrono::steady_clock::now() - std::chrono::milliseconds(5);
+    const Poll poll = [&]() {   // at most every 5 ms
+      if (std::this_thread::get_id() != r_thread || interrupt) return;
+      const auto now = std::chrono::steady_clock::now();
+      if (now - last < std::chrono::milliseconds(5)) return;
+      last = now;
+      try { Rcpp::checkUserInterrupt(); } catch (...) { interrupt = std::current_exception(); cancel.store(true); return; }
+      if (prog.on) {
+        // Candidates done, and the time left at the rate so far (searches still running count as half done)
+        const int d = done.load(); int running = 0; for (int q = 0; q < jobs; ++q) if (state[q].load() == 1) ++running;
+        const double frac = (double)d / jobs, part = d + 0.5 * running;
+        const int W = 15, filled = (int)(W * std::min(frac, 1.0));
+        std::string bar = BAR_START; for (int i = 0; i < W; ++i) bar += (i < filled ? BAR_FILL : BAR_EMPTY); bar += BAR_END;
+        std::ostringstream o; o << "~{ LOCO }~ " << d << "/" << jobs << " ";
+        const int beat = filled < W ? (int)o.tellp() + (int)std::string(BAR_START).size() + filled : -1;
+        o << bar << " " << (int)(100 * std::min(frac, 1.0)) << "% | ETA: "
+          << (d > 0 ? format_time(secs_since(t1) / part * (jobs - part)) : std::string("-"));
+        prog.line(o.str(), false, beat);
       }
-    } catch (...) { cancel.store(true); driver.join(); throw; }
-    driver.join();
+    };
+    auto take = [&](const Poll* pl) {
+      for (;;) {
+        if (cancel.load()) return;
+        const int q = next.fetch_add(1); if (q >= jobs) return;
+        // isolated: while waiting inside its own parallel loops, a thread runs only those loops' pieces, never
+        // another `take` (which would hold this search up until that one ran out of searches)
+        tbb::this_task_arena::isolate([&] {
+          try { run_job(q, mode == 0 ? 0 : 1, &cancel, nullptr, "", pl); } catch (...) { res[q].failed = true; } });
+        { std::lock_guard<std::mutex> g(wake_mu); done.fetch_add(1); }
+        wake.notify_all();
+      }
+    };
+    within_thread_limit([&] {
+      tbb::task_group helpers;
+      const int n_help = std::min(jobs, tbb::this_task_arena::max_concurrency()) - 1;
+      for (int h = 0; h < n_help; ++h) helpers.run([&] { take(nullptr); });
+      take(&poll);
+      for (;;) {   // none left to take: every 5 ms, or as soon as the last search ends
+        { std::unique_lock<std::mutex> lk(wake_mu);
+          wake.wait_for(lk, std::chrono::milliseconds(5), [&] { return done.load() >= std::min(next.load(), jobs); }); }
+        if (done.load() >= std::min(next.load(), jobs)) break;
+        poll();
+      }
+      helpers.wait();
+    });
+    if (interrupt) std::rethrow_exception(interrupt);
     for (int q = 0; q < jobs; ++q) if (state[q].load() != 2) res[q].failed = true;
   } else {
     // Few searches (short forms): one after another, each on every thread, with the search's own progress bar
     for (int q = 0; q < jobs; ++q) {
       std::ostringstream h; h << "~{ LOCO }~ " << q + 1 << "/" << jobs << ",";
-      run_job(q, 2, nullptr, &prog, h.str());
+      run_job(q, 2, nullptr, &prog, h.str(), nullptr);
     }
   }
   for (const JobOut& r : res) if (r.failed) Rcpp::stop("A LOCO search failed.");

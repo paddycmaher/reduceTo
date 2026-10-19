@@ -290,8 +290,14 @@ struct GramSearch {
     for (int c = 0, at = 0; c <= hl; ++c) { Loff[c] = at; for (uint32_t m = 0; m < (1u << hl); ++m) if (rt_popcount(m) == c) { Lall.push_back(m); ++at; } }
     Loff[hl + 1] = (int)Lall.size();
     auto Tof = [&](uint32_t m, int base) { double s = 0; for (int y = 0; m; ++y, m >>= 1) if (m & 1u) s += t[Y0 + base + y]; return s; };
-    auto Qof = [&](uint32_t m, int base) { double s = 0; for (int x = 0; x < 16; ++x) if (m >> x & 1u) { const int gx = Y0 + base + x; s += u0[gx];
-        for (int z = x + 1; z < 16; ++z) if (m >> z & 1u) s += 2.0 * C[(size_t)gx * p + Y0 + base + z]; } return s; };
+    auto Qof = [&](uint32_t m, int base) {
+      double s = 0;
+      for (int x = 0; x < 16; ++x) if (m >> x & 1u) {
+        const int gx = Y0 + base + x; s += u0[gx];
+        for (int z = x + 1; z < 16; ++z) if (m >> z & 1u) s += 2.0 * C[(size_t)gx * p + Y0 + base + z];
+      }
+      return s;
+    };
     TBh.resize(1u << hh); std::vector<double> QBh(1u << hh), QBl(1u << hl);
     for (uint32_t m = 0; m < (1u << hh); ++m) { TBh[m] = Tof(m, hl); QBh[m] = Qof(m, hl); }
     for (uint32_t m = 0; m < (1u << hl); ++m) QBl[m] = Qof(m, 0);
