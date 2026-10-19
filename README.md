@@ -1,12 +1,12 @@
 # reduceTo: Exact High-Performance Combinatorial Scale Reduction
 
-**Find the exact optimal unit-weighted subset of items from any item bank through an ultra-fast exhaustive search.**
+**Find the exact optimal unit-weighted subset of items from any item set through an ultra-fast exhaustive search.**
 
 ------------------------------------------------------------------------
 
 ## Overview
 
-`reduceTo()` solves the combinatorial optimisation problem of selecting the exact set of *`n`* items from a larger pool that maximises correlation with a target criterion. reduceTo can be used to shorten existing psychological scales, build diagnostic screeners, or derive scales from item banks based on an external criterion.
+`reduceTo()` solves the combinatorial optimisation problem of selecting the exact set of *`n`* items from any item pool that maximises correlation with a selected target criterion. reduceTo can be used to shorten existing psychological scales, build diagnostic screeners, or derive scales from item banks based on an external criterion.
 
 ### Key Features
 
@@ -98,19 +98,21 @@ However, beyond raw speed, reduceTo additionally does not need to inspect every 
 
 reduceTo's exhaustive search backend is extremely fast, running at tens of billions of operations a second. However, for massive problems where exhaustive search isn't tractable, reduceTo automatically switches to a **Knockout search**.
 
-To see which walls an old house needs most, you could (in theory) remove each one in turn and measure whether the house slumps. reduceTo knocks items out of the source scale in the same way, assessing how each knockout moves the scale's centroid. This is used to walk to a first answer; then, from this answer, nearby combinations are explored to ensure no better answers are missed.
+To see which walls an old house needs most, you could (in theory) remove each one in turn and measure whether the house slumps. reduceTo knocks items out of the source scale in the same way, assessing how each knockout moves the scale's centroid. This is used to walk to a first answer; from this starting point, nearby combinations are explored to ensure no better answers are missed.
 
-1\. Iterative knockout: Starting from the full scale, knock out the item whose loss moves the centroid least, repeating until `n.items` remain.
+1\. Iterative knockout: Starting from the full scale, knock out the item whose loss moves the centroid least, and repeat until `n.items` remain.
 
-2\. Scan: For every item, assess how much swapping them in/out of the form, either alone or along with one other item, would lower the short form's *r*, and are ranked from lowest-impact (i.e. least confidence about inclusion vs. exclusion) to highest-impact.
+2\. Scan: For every item across the entire pool, assess how much swapping them in/out of the form, either alone or along with one other item, would lower the short form's *r*. Items are ranked from lowest-impact changes (i.e. least confidence about whether the house really needs this wall or not) to highest-impact.
 
 3\. Search: Starting at the top of this list, score as many combinations as `knockout.budget` (`ceiling / 1000` by default) allows, holding the other items fixed, with the same Gram-matrix engine as the exhaustive search. If an improved short form is found during this process, repeat the scan & search process from this starting point.
 
-4\. Leave One Candidate Out (LOCO): Steps 1-3 identify the strongest item set in most cases, but can fall into a local optimum. As a final step, knock out each item of the current best short form in turn, and repeats step 2 and 3 again with it banned. When very long scales are reduced by less than 50% but more than 20 items, each left-out item is instead put back in (Put One Candidate In - POCI).
+4\. Leave One Candidate Out (LOCO): Steps 1-3 identify the strongest item set in many cases, but can fall into a local optimum, missing a better solution that's just out of reach. To force further exploration, each item of the current best short form is knocked out in turn, and steps 2 and 3 are repeated with that item completely banned.* 
 
-5\. Sweepdown: Although they almost always do in practice, larger knockout budgets do not *automatically* find better solutions than smaller ones. For the sake of any edge cases, a very cheap additional step happens, in which the whole process (steps 1-4) is repeated at smaller budgets, sweeping through every order of magnitude from the knockdown budget down to 10^1^.
+5\. Sweepdown: Finally, although they almost always do in practice, larger knockout budgets do not *automatically* find better solutions than smaller ones. For the sake of any edge cases, a very cheap additional step happens, in which the whole process (steps 1-4) is repeated at smaller budgets, sweeping through every order of magnitude from the knockdown budget down to 10^1^.
 
-Finally, the best short forms are added to the leaderboard, and re-scored exactly from the raw (non-mean-imputed) data.
+The best 100 short forms are added to a leaderboard, and reported to the user.
+
+**(Note: When very long scales are reduced by less than 50% but more than 20 items, each left-out item is instead forced back into the scale (Put One Candidate In - POCI), as opposed to an item from the scale being forced out.)*
 
 ### Cross-Validation
 
@@ -307,6 +309,11 @@ The default ceiling is now 10\^12: problems up to a trillion combinations are se
 - Garbage in, garbage out. Please, please ensure your parent scale is actually valid before you reduce it
 - Use your own judgement. Review the best solutions and check whether any items you think are 'bad' are being included; if they are, this indicates a problem with the parent scale
 - Consider cross-validation for smaller samples (*N* \< 300) where overfitting may be a concern
+
+## FAQs
+
+- Don't Gram matrices require non-missing data?
+*Yes, they do. The engine runs on mean-imputed data to generate the top-100 list. These, however, are always re-scored at the very end*
 
 ------------------------------------------------------------------------
 
