@@ -265,10 +265,10 @@ Measured on a massive dataset (300 items, N = 300,000), scoring all C(300, 3) = 
 
 | Engine | Combinations/sec | Time for 4.45M combinations |
 |------------------------|------------------------|------------------------|
-| `speed = "fast"` (Gram matrix) | 2B+/s | \~0.23s (incl. one-time Gram precompute; the search itself takes \~1-2ms) |
-| `speed = "conservative"` (Row-scan algorithm) | \~9,190/s | \~8.1 min |
+| `speed = "fast"` (Gram matrix) | 1.6B+/s | \~0.29s (incl. one-time Gram precompute; the search itself takes \~3ms) |
+| `speed = "conservative"` (Row-scan algorithm) | \~9,800/s | \~7.6 min |
 
-**\~2,100x faster** than a standard row-scan engine for this case. This is close to the ceiling case for the Gram matrix approach (small `n.items` and large *N*, since row-scan cost scales with *N* per combination while the Gram engine's is roughly constant per combination, regardless of *N* or `n.items`).
+**\~1,600x faster** than a standard row-scan engine for this case. This is close to the ceiling case for the Gram matrix approach (small `n.items` and large *N*, since row-scan cost scales with *N* per combination while the Gram engine's is roughly constant per combination, regardless of *N* or `n.items`).
 
 ### reduceTo() vs. Plain R
 
@@ -279,9 +279,9 @@ As a comparison, the "Base R Only" column below estimates the best-case scenario
 | 3 of 60   | 34,220             | **\~2.4 sec**    | **0.01s**                     |
 | 5 of 60   | 5,461,512          | **\~8.2 min**    | **0.01s**                     |
 | 8 of 60   | 2,558,620,845      | **\~3.7 days**   | **0.04s** (exhaustive)        |
-| 10 of 60  | 75,394,027,566     | **\~4.2 months** | **0.6s** (exhaustive)         |
-| 12 of 60  | 1,399,358,844,975  | **\~9 years**    | **0.6s** (knockout search)    |
-| 15 of 60  | 53,194,089,192,720 | **\~400 years**  | **0.6s** (knockout search)    |
+| 10 of 60  | 75,394,027,566     | **\~4.2 months** | **0.60s** (exhaustive)         |
+| 12 of 60  | 1,399,358,844,975  | **\~9 years**    | **0.60s** (knockout search)    |
+| 15 of 60  | 53,194,089,192,720 | **\~400 years**  | **0.60s** (knockout search)    |
 
 Collectively, the C++ backend, Gram-matrix scoring, branch-cutting, and knockout search let reduceTo shorten what might be a months-long base-R search to seconds.
 
