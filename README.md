@@ -108,7 +108,7 @@ To see which walls an old house needs most, you could (in theory) remove each on
 
 4\. Leave One Candidate Out (LOCO): Steps 1-3 identify the strongest item set in many cases, but can fall into a local optimum, missing a better solution that's just out of reach. To force further exploration, each item of the current best short form is knocked out in turn, and steps 2 and 3 are repeated with that item completely banned.* 
 
-5\. Sweepdown: Finally, although they almost always do in practice, larger knockout budgets do not *automatically* find better solutions than smaller ones. For the sake of any edge cases, a very cheap additional step happens, in which the whole process (steps 1-4) is repeated at smaller budgets, sweeping through every order of magnitude from the knockdown budget down to 10^1^.
+5\. Sweepdown: Finally, although they almost always do in practice, larger knockout budgets do not *automatically* find better solutions than smaller ones. For the sake of any edge cases, a very cheap additional step happens, in which the whole process (steps 1-4) is repeated at smaller budgets, sweeping through every order of magnitude from the knockdown budget down to 10<sup>1</sup>.
 
 The best 100 short forms are added to a leaderboard, and reported to the user.
 
