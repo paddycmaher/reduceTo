@@ -76,7 +76,7 @@ result <- reduceTo(data, n.items = 6, target = diagnosis)
 ```
 ------------------------------------------------------------------------
 
-## Shortening Scales for Preservation
+## Shortening Scales for Validity Preservation
 
 A scale's central axis, i.e. the average vector of all its items, is its 'centroid' (Little, Lindenberger & Nesselroade, 1999), a vector that defines which specific dimension of human psychology it captures.
 
