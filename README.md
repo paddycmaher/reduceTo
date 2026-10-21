@@ -261,7 +261,7 @@ Measured on a massive dataset (300 items, N = 300,000), scoring all C(300, 3) = 
 
 | Engine | Combinations/sec | Time for 4.45M combinations |
 |------------------------|------------------------|------------------------|
-| `speed = "fast"` (Gram matrix) | 1.6B+/s | \~0.29s (incl. one-time Gram precompute; the search itself takes \~3ms) |
+| `speed = "fast"` (Gram matrix) | 1.6B+/s | \~0.29s |
 | `speed = "conservative"` (Row-scan algorithm) | \~9,800/s | \~7.6 min |
 
 **\~1,600x faster** than a standard row-scan engine for this case. This is close to the ceiling case for the Gram matrix approach (small `n.items` and large *N*, since row-scan cost scales with *N* per combination while the Gram engine's is roughly constant per combination, regardless of *N* or `n.items`).
