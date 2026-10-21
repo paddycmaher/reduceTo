@@ -12,7 +12,7 @@
 
 - **Exhaustive**: Tests every combination in the chosen search space to find the optimal item set
 - **Rapid**: Parallelised C++ backend that scores combinations from precomputed column moments (a Gram matrix)
-- **Scales**: For very large, intractable item reduction problems (100+ items), (optionally) runs a knockout search that systematically identifies synergistic item sets
+- **Scales**: For very large, intractable item reduction problems, (optionally) runs a knockout search to find the best solutions algorithmically
 - **Robust**: Unit-weighting mitigates overfitting, and also is representative of common real-world sum-score usages
 - **Production-Ready**: Built-in cross-validation option, progress tracking, robust error handling
 - **User Friendly**: Automatic data preprocessing, auto-detection of reverse-keyed items, auto-detection and reporting for binary outcomes, simple UI
