@@ -98,7 +98,7 @@ However, beyond raw speed, reduceTo additionally does not need to inspect every 
 
 reduceTo's exhaustive search backend is extremely fast, running at tens of billions of operations a second. However, for massive problems where exhaustive search isn't tractable, reduceTo automatically switches to a **Knockout search**.
 
-To see which walls an old house needs most, you could (in theory) remove each one in turn and measure whether the house slumps. reduceTo knocks items out of the source scale in the same way, assessing how each knockout moves the scale's centroid. This is used to walk to a first answer; from this starting point, nearby combinations are explored to ensure no better answers are missed.
+To see which walls an old house needs most, you could (in theory) remove each one in turn and measure how the house slumps. reduceTo knocks items out of the source scale in the same way, assessing how each knockout moves the scale's centroid. This is used to walk directly to a first answer, which is rarely the true solution; from this starting point, nearby combinations are explored to ensure no better answers are missed.
 
 1\. Iterative knockout: Starting from the full scale, knock out the item whose loss moves the centroid least, and repeat until `n.items` remain.
 
